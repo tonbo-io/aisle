@@ -22,6 +22,11 @@ tokio = { version = "1.44.2", features = ["full"] }
 fusio = { git = "https://github.com/tonbo-io/fusio.git", branch = "main", package = "fusio", features = [
     "tokio",
 ] }
+parquet = { version = "55.0.0", default-features = false, features = [
+    "arrow",
+    "async",
+    "lz4",
+] }
 
 [profile.release]
 lto = true
