@@ -1,6 +1,6 @@
 use std::result::Result;
 
-use filter::{RowFilter, evaluate_predicate};
+use filter::{RowFilter, evaluate_predicate, filter_row_groups};
 pub use parquet::arrow::ProjectionMask;
 use parquet::{
     arrow::{
@@ -64,27 +64,27 @@ where
         })
     }
 
-    pub async fn build(self) -> Result<ParquetRecordBatchStream<T>, ParquetError> {
+    pub async fn build(mut self) -> Result<ParquetRecordBatchStream<T>, ParquetError> {
         let mut builder = self.builder;
         let metadata = builder.metadata();
-        let schema = builder.schema();
+        let arrow_schema = builder.schema();
 
         // TOOD: using statistics to skip row groups
+        let mut row_groups = match self.row_groups.take() {
+            Some(row_groups) => row_groups,
+            None => (0..metadata.num_row_groups()).collect::<Vec<usize>>(),
+        };
         if let Some(mut filter) = self.filter {
-            // if let Some(row_groups) = self.row_groups.as_ref() {
-            //     for _rg in row_groups.iter() {
-            //         // rg.stat
-            //     }
-            // } else {
-
-            // }
-            let row_groups = (0..metadata.num_row_groups()).collect::<Vec<usize>>();
             if self.enable_page_filter {
+                for predicate in filter.predicates.iter_mut() {
+                    row_groups =
+                        filter_row_groups(metadata, arrow_schema, &row_groups, predicate.as_mut())?;
+                }
                 let mut selection = None;
                 for predicate in filter.predicates.iter_mut() {
                     selection = Some(evaluate_predicate(
                         metadata,
-                        schema,
+                        arrow_schema,
                         &row_groups,
                         selection,
                         predicate.as_mut(),
@@ -99,14 +99,14 @@ where
             builder = builder.with_row_filter(filter.into());
         }
 
-        // if let Some(row_groups) = self.row_groups {
-        //     builder = builder.with_row_groups(row_groups);
-        // }
         if let Some(limit) = self.limit {
             builder = builder.with_limit(limit);
         }
 
-        builder.build()
+        builder
+            .with_projection(self.projection)
+            .with_row_groups(row_groups)
+            .build()
     }
 }
 
@@ -170,24 +170,35 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::{
-        array::{ArrayRef, Datum, RecordBatch, StringArray, UInt8Array, UInt64Array},
-        compute::kernels::cmp::{gt, lt},
+        array::{ArrayRef, AsArray, Datum, RecordBatch, StringArray, UInt8Array, UInt64Array},
+        datatypes::UInt64Type,
     };
     use arrow_schema::{DataType, Field, Schema};
     use fusio::{DynFs, disk::TokioFs, fs::OpenOptions, path::Path};
     use fusio_parquet::{reader::AsyncReader, writer::AsyncWriter};
     use futures_util::StreamExt;
     use parquet::{
-        arrow::{AsyncArrowWriter, ProjectionMask, arrow_reader::ArrowPredicate},
+        arrow::{
+            AsyncArrowWriter, ProjectionMask,
+            arrow_reader::{ArrowPredicate, ArrowReaderOptions},
+            async_reader::AsyncFileReader,
+        },
         basic::Compression,
-        file::properties::{EnabledStatistics, WriterProperties},
+        errors::ParquetError,
+        file::{
+            metadata::ParquetMetaData,
+            properties::{EnabledStatistics, WriterProperties},
+        },
         format::SortingColumn,
         schema::types::ColumnPath,
     };
 
-    use crate::reader::{
-        ParquetRecordBatchStreamBuilder,
-        filter::{AislePredicate, RowFilter},
+    use crate::{
+        ord::{gt, lt},
+        reader::{
+            ParquetRecordBatchStreamBuilder,
+            filter::{AislePredicate, RowFilter},
+        },
     };
 
     fn get_ordered_record_batch(record_size: usize) -> RecordBatch {
@@ -224,7 +235,7 @@ mod tests {
     //     .unwrap()
     // }
 
-    async fn load_ordered_data(
+    async fn load_data(
         parquet_path: Path,
         writer_properties: WriterProperties,
         record_batch: RecordBatch,
@@ -258,7 +269,7 @@ mod tests {
         dir: &str,
         filename: &str,
         writer_properties: WriterProperties,
-        ordered: bool,
+        record_batch: RecordBatch,
     ) {
         let parquet_path = format!("{}/{}", dir, filename);
 
@@ -267,81 +278,202 @@ mod tests {
                 std::fs::create_dir_all(dir).unwrap();
             }
             let path = Path::new(dir).unwrap().child(filename);
-            if ordered {
-                load_ordered_data(
-                    path,
-                    writer_properties,
-                    get_ordered_record_batch(8 * 1024 * 1024),
-                )
-                .await;
-            }
+            load_data(path, writer_properties, record_batch).await;
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_read_parquet() {
-        let column_paths = ColumnPath::new(vec!["id".to_string()]);
-        let sorting_columns = vec![SortingColumn::new(0, true, true)];
-        let properties = WriterProperties::builder()
-            // .set_max_row_group_size(1024 * 16)
-            // .set_data_page_size_limit(1024 * 4)
-            .set_compression(Compression::LZ4)
-            .set_column_statistics_enabled(column_paths.clone(), EnabledStatistics::Page)
-            .set_column_bloom_filter_enabled(column_paths.clone(), true)
-            .set_sorting_columns(Some(sorting_columns))
-            .set_created_by(concat!("aisle version ", env!("CARGO_PKG_VERSION")).to_owned())
-            .build();
-
-        let filename = "data.parquet";
-        let dir = "./data";
-        try_load_data("./data", filename, properties, true).await;
-
+    async fn get_parquet_metadata(path: &Path) -> Result<Arc<ParquetMetaData>, ParquetError> {
         let fs = Arc::new(TokioFs);
 
         let file = fs
-            .open_options(
-                &Path::new(dir).unwrap().child(filename),
-                OpenOptions::default().read(true),
-            )
+            .open_options(path, OpenOptions::default().read(true))
+            .await
+            .unwrap();
+        let size = file.size().await.unwrap();
+        let mut reader = AsyncReader::new(file, size).await.unwrap();
+        reader
+            .get_metadata(Some(&ArrowReaderOptions::new().with_page_index(true)))
+            .await
+    }
+
+    async fn read_parquet(
+        path: &Path,
+        predicates: Vec<Box<dyn ArrowPredicate>>,
+        page_filter: bool,
+    ) -> Result<Vec<RecordBatch>, ParquetError> {
+        let fs = Arc::new(TokioFs);
+
+        let mut batches = vec![];
+        let file = fs
+            .open_options(path, OpenOptions::default().read(true))
             .await
             .unwrap();
         let size = file.size().await.unwrap();
         let reader = AsyncReader::new(file, size).await.unwrap();
+
         let builder = ParquetRecordBatchStreamBuilder::new(reader).await.unwrap();
-        let parquet_schema = builder.parquet_schema();
-        let predicates: Vec<Box<dyn ArrowPredicate>> = vec![
-            Box::new(AislePredicate::new(
-                ProjectionMask::roots(parquet_schema, vec![0]),
-                move |batch| {
-                    let datum = Arc::new(UInt64Array::new_scalar(100 * 1024)) as Arc<dyn Datum>;
-                    gt(batch.column(0), datum.as_ref())
-                },
-            )),
-            Box::new(AislePredicate::new(
-                ProjectionMask::roots(parquet_schema, vec![0]),
-                move |batch| {
-                    let datum =
-                        Arc::new(UInt64Array::new_scalar(100 * 1024 + 100)) as Arc<dyn Datum>;
-                    lt(batch.column(0), datum.as_ref())
-                },
-            )),
-        ];
-        let start = std::time::Instant::now();
+
         let mut reader = builder
             .with_row_filter(RowFilter::new(predicates))
-            .with_page_filter(true)
+            .with_page_filter(page_filter)
             .build()
-            .await
-            .unwrap();
-        while let Some(record) = reader.next().await {
-            assert!(record.is_ok());
-            let record_batch = record.unwrap();
-            dbg!(record_batch.column(0));
-            // dbg!(record_batch);
+            .await?;
+
+        while let Some(batch) = reader.next().await {
+            batches.push(batch?);
         }
-        let time = start.elapsed().as_millis() as f64 / 1000.0;
-        println!("----------------------------");
-        println!("read parquet: {:.4}", time);
-        println!("----------------------------");
+        Ok(batches)
+    }
+
+    fn writer_properties(
+        column_paths: Option<Vec<String>>,
+        sorting_column_indics: Option<Vec<usize>>,
+    ) -> WriterProperties {
+        let mut builder = WriterProperties::builder()
+            .set_compression(Compression::LZ4)
+            .set_created_by(concat!("aisle version ", env!("CARGO_PKG_VERSION")).to_owned());
+        if let Some(column_paths) = column_paths {
+            let column_paths = ColumnPath::new(column_paths);
+            builder = builder
+                .set_column_bloom_filter_enabled(column_paths.clone(), true)
+                .set_column_statistics_enabled(column_paths.clone(), EnabledStatistics::Page);
+            if let Some(sorting_columns) = sorting_column_indics {
+                let sorting_columns: Vec<SortingColumn> = sorting_columns
+                    .iter()
+                    .map(|idx| SortingColumn::new(*idx as i32, true, true))
+                    .collect();
+                builder = builder.set_sorting_columns(Some(sorting_columns));
+            }
+        }
+        builder.build()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_read_parquet_scan() {
+        let properties = writer_properties(Some(vec!["id".into()]), Some(vec![0]));
+
+        let filename = "data.parquet";
+        let dir = "./data";
+        try_load_data(
+            dir,
+            filename,
+            properties,
+            get_ordered_record_batch(8 * 1024 * 1024),
+        )
+        .await;
+
+        let parquet_file_path = Path::new(dir).unwrap().child(filename);
+
+        let metadata = get_parquet_metadata(&parquet_file_path).await.unwrap();
+        let parquet_schema = metadata.file_metadata().schema_descr();
+
+        let right_range_p = AislePredicate::new(
+            ProjectionMask::roots(parquet_schema, vec![0]),
+            move |batch| {
+                let datum = Arc::new(UInt64Array::new_scalar(100 * 1024)) as Arc<dyn Datum>;
+                gt(batch.column(0), datum.as_ref())
+            },
+        );
+        let left_range_p = AislePredicate::new(
+            ProjectionMask::roots(parquet_schema, vec![0]),
+            move |batch| {
+                let datum = Arc::new(UInt64Array::new_scalar(100 * 1024 + 100)) as Arc<dyn Datum>;
+                lt(batch.column(0), datum.as_ref())
+            },
+        );
+
+        let predicates: Vec<Box<dyn ArrowPredicate>> = vec![
+            Box::new(right_range_p.clone()),
+            Box::new(left_range_p.clone()),
+        ];
+        let predicates2: Vec<Box<dyn ArrowPredicate>> =
+            vec![Box::new(right_range_p), Box::new(left_range_p)];
+
+        {
+            let expected: Vec<u64> = read_parquet(&parquet_file_path, predicates2, false)
+                .await
+                .unwrap()
+                .iter()
+                .flat_map(|batch| {
+                    let ids = batch.column(0).as_primitive::<UInt64Type>();
+                    ids.values().to_vec()
+                })
+                .collect();
+            let actual: Vec<u64> = read_parquet(&parquet_file_path, predicates, true)
+                .await
+                .unwrap()
+                .iter()
+                .flat_map(|batch| {
+                    let ids = batch.column(0).as_primitive::<UInt64Type>();
+                    ids.values().to_vec()
+                })
+                .collect();
+            assert_eq!(expected, actual);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_read_parquet_scan_cross_page() {
+        let properties = writer_properties(Some(vec!["id".to_string()]), Some(vec![0]));
+
+        let filename = "data.parquet";
+        let dir = "./data";
+        try_load_data(
+            dir,
+            filename,
+            properties,
+            get_ordered_record_batch(8 * 1024 * 1024),
+        )
+        .await;
+
+        let parquet_file_path = Path::new(dir).unwrap().child(filename);
+
+        let metadata = get_parquet_metadata(&parquet_file_path).await.unwrap();
+        let parquet_schema = metadata.file_metadata().schema_descr();
+
+        let right_range_p = AislePredicate::new(
+            ProjectionMask::roots(parquet_schema, vec![0]),
+            move |batch| {
+                let datum = Arc::new(UInt64Array::new_scalar(100 * 1024)) as Arc<dyn Datum>;
+                gt(batch.column(0), datum.as_ref())
+            },
+        );
+        let left_range_p = AislePredicate::new(
+            ProjectionMask::roots(parquet_schema, vec![0]),
+            move |batch| {
+                let datum = Arc::new(UInt64Array::new_scalar(100 * 1024 + 100)) as Arc<dyn Datum>;
+                lt(batch.column(0), datum.as_ref())
+            },
+        );
+
+        let predicates: Vec<Box<dyn ArrowPredicate>> = vec![
+            Box::new(right_range_p.clone()),
+            Box::new(left_range_p.clone()),
+        ];
+        let predicates2: Vec<Box<dyn ArrowPredicate>> =
+            vec![Box::new(right_range_p), Box::new(left_range_p)];
+
+        {
+            let expected: Vec<u64> = read_parquet(&parquet_file_path, predicates2, false)
+                .await
+                .unwrap()
+                .iter()
+                .flat_map(|batch| {
+                    let ids = batch.column(0).as_primitive::<UInt64Type>();
+                    ids.values().to_vec()
+                })
+                .collect();
+            let actual: Vec<u64> = read_parquet(&parquet_file_path, predicates, true)
+                .await
+                .unwrap()
+                .iter()
+                .flat_map(|batch| {
+                    let ids = batch.column(0).as_primitive::<UInt64Type>();
+                    ids.values().to_vec()
+                })
+                .collect();
+
+            assert_eq!(expected, actual);
+        }
     }
 }

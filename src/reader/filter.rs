@@ -10,10 +10,7 @@ use parquet::{
         },
     },
     errors::ParquetError,
-    file::{
-        metadata::{ColumnChunkMetaData, ParquetMetaData, RowGroupMetaData},
-        statistics::Statistics,
-    },
+    file::metadata::{ColumnChunkMetaData, ParquetMetaData, RowGroupMetaData},
     format::PageLocation,
 };
 
@@ -36,6 +33,7 @@ impl From<RowFilter> for parquet::arrow::arrow_reader::RowFilter {
     }
 }
 
+#[derive(Clone)]
 pub struct AislePredicate<F> {
     projection: ProjectionMask,
     // p: ArrowPredicateFn<F>,
@@ -44,7 +42,7 @@ pub struct AislePredicate<F> {
 
 impl<F> AislePredicate<F>
 where
-    F: FnMut(RecordBatch) -> Result<BooleanArray, ArrowError> + Send + 'static,
+    F: FnMut(RecordBatch) -> Result<crate::BooleanArray, ArrowError> + Send + 'static,
 {
     /// Create a new [`ArrowPredicateFn`]. `f` will be passed batches
     /// that contains the columns specified in `projection`
@@ -57,7 +55,7 @@ where
 
 impl<F> ArrowPredicate for AislePredicate<F>
 where
-    F: FnMut(RecordBatch) -> Result<BooleanArray, ArrowError> + Send + 'static,
+    F: FnMut(RecordBatch) -> Result<crate::BooleanArray, ArrowError> + Send + 'static,
 {
     fn projection(&self) -> &ProjectionMask {
         &self.projection
@@ -66,9 +64,79 @@ where
     fn evaluate(
         &mut self,
         batch: arrow::array::RecordBatch,
-    ) -> std::result::Result<arrow::array::BooleanArray, arrow_schema::ArrowError> {
-        (self.f)(batch)
+    ) -> std::result::Result<BooleanArray, arrow_schema::ArrowError> {
+        let res = (self.f)(batch)?;
+        Ok(res.array)
     }
+}
+
+#[allow(unused)]
+pub(crate) fn filter_row_groups(
+    metadata: &ParquetMetaData,
+    arrow_schema: &Schema,
+    row_group_indices: &[usize],
+    predicate: &mut dyn ArrowPredicate,
+) -> Result<Vec<usize>, ParquetError> {
+    if metadata.row_groups().is_empty() || row_group_indices.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let projection = predicate.projection();
+    let rg = metadata.row_group(row_group_indices[0]);
+    let projected_columns: Vec<(usize, &ColumnChunkMetaData)> = rg
+        .columns()
+        .iter()
+        .enumerate()
+        .filter(|(idx, _col)| projection.leaf_included(*idx))
+        .collect();
+
+    if projected_columns.len() != 1 {
+        // two case:
+        //   1. projected_columns.len == 0: predicate does not work
+        //   2. projected_columns.len > 1: we will do it in the future
+        return Ok(row_group_indices.to_vec());
+    }
+
+    let mut schema = vec![];
+
+    for (col_idx, _) in projected_columns.iter() {
+        let field = arrow_schema.field(*col_idx);
+        schema.push(field.clone());
+    }
+
+    let schema = Arc::new(Schema::new(schema));
+
+    let mut max_batch = vec![];
+    let mut min_batch = vec![];
+    let mut selected_row_group_indices = vec![];
+
+    for (col_idx, col) in projected_columns.iter() {
+        let col = rg.column(*col_idx);
+        let col_name = col.column_descr().name();
+        let convert = StatisticsConverter::try_new(
+            col_name,
+            arrow_schema,
+            metadata.file_metadata().schema_descr(),
+        )?;
+        let mins = convert.row_group_mins(metadata.row_groups())?;
+        let maxes = convert.row_group_maxes(metadata.row_groups())?;
+        max_batch.push(maxes);
+        min_batch.push(mins);
+    }
+    let max_record_batch = RecordBatch::try_new(schema.clone(), max_batch).unwrap();
+    let min_record_batch = RecordBatch::try_new(schema, min_batch).unwrap();
+
+    for (idx, selected) in evaluate_merge(predicate, max_record_batch, min_record_batch)?
+        .iter()
+        .enumerate()
+    {
+        let row_group_idx = row_group_indices[idx];
+        if *selected {
+            selected_row_group_indices.push(row_group_idx);
+        }
+    }
+
+    Ok(selected_row_group_indices)
 }
 
 pub(crate) fn evaluate_predicate(
@@ -97,10 +165,9 @@ pub(crate) fn evaluate_predicate(
         .iter()
         .enumerate()
         .filter(|(idx, _col)| projection.leaf_included(*idx))
-        // .map(|(_, col)| col)
         .collect();
 
-    let mut p_schema = vec![];
+    let mut fields = vec![];
     let mut max_batch = vec![];
     let mut min_batch = vec![];
     if projected_columns.len() != 1 {
@@ -126,33 +193,25 @@ pub(crate) fn evaluate_predicate(
             metadata.offset_index().unwrap(),
             row_group_indices,
         )?;
-        let maxs = convert.data_page_maxes(
+        let maxes = convert.data_page_maxes(
             metadata.column_index().unwrap(),
             metadata.offset_index().unwrap(),
             row_group_indices,
         )?;
-        p_schema.push(Field::new(
+        fields.push(Field::new(
             col_name,
             mins.data_type().clone(),
             mins.is_nullable(),
         ));
-        max_batch.push(maxs);
+        max_batch.push(maxes);
         min_batch.push(mins);
     }
 
-    let max_record_batch =
-        RecordBatch::try_new(Arc::new(Schema::new(p_schema.clone())), max_batch).unwrap();
-    let min_record_batch =
-        RecordBatch::try_new(Arc::new(Schema::new(p_schema)), min_batch).unwrap();
+    let schema = Arc::new(Schema::new(fields));
+    let max_record_batch = RecordBatch::try_new(schema.clone(), max_batch).unwrap();
+    let min_record_batch = RecordBatch::try_new(schema.clone(), min_batch).unwrap();
 
-    let max_array = predicate.evaluate(min_record_batch).unwrap();
-    let min_array = predicate.evaluate(max_record_batch).unwrap();
-
-    let filters = max_array
-        .iter()
-        .zip(min_array.iter())
-        .map(|(max, min)| max.unwrap_or(true) || min.unwrap_or(true))
-        .collect::<Vec<bool>>();
+    let filters = evaluate_merge(predicate, max_record_batch, min_record_batch)?;
 
     // FIXME: update the column index if multiple columns are supported
     let row_counts = page_row_counts(metadata, row_group_indices, projected_columns[0].0);
@@ -191,6 +250,7 @@ fn page_row_counts(
     res
 }
 
+/// return the row counts of pages in the given row group
 fn row_group_page_row_counts(
     row_group: &RowGroupMetaData,
     page_offsets: &[PageLocation],
@@ -208,4 +268,161 @@ fn row_group_page_row_counts(
     });
     row_counts.push(total_rows - page_offsets.last().unwrap().first_row_index as usize);
     row_counts
+}
+
+/// evaluate the predicate with two [`RecordBatch`], and then merge the result.
+///
+/// For example:
+///
+/// evaluate batch1 get the result `[true, false, false, true]`
+///
+/// evaluete batch2 get the result `[true, true, false, false]`
+///
+/// then the final result is `[true, false, false, false]`
+///
+/// **Note:**
+/// - the schema of two batches should be the same.
+/// - the column number of two batches should be the same.
+/// - the row number of two batches should be the same.
+fn evaluate_merge(
+    predicate: &mut dyn ArrowPredicate,
+    batch1: RecordBatch,
+    batch2: RecordBatch,
+) -> Result<Vec<bool>, ParquetError> {
+    debug_assert_eq!(batch1.num_columns(), batch2.num_columns());
+    debug_assert_eq!(batch1.num_rows(), batch2.num_rows());
+
+    if batch1.schema() != batch2.schema() {
+        return Err(ParquetError::ArrowError("schema should be the same".into()));
+    }
+
+    let array1 = predicate.evaluate(batch1).unwrap();
+    let array2 = predicate.evaluate(batch2).unwrap();
+
+    Ok(array1
+        .iter()
+        .zip(array2.iter())
+        .map(|(max, min)| max.unwrap_or(true) || min.unwrap_or(true))
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::{Datum, UInt64Array, record_batch};
+    use parquet::arrow::{ProjectionMask, arrow_reader::ArrowPredicate};
+
+    use super::{AislePredicate, evaluate_merge};
+    use crate::ord::{gt, lt, lt_eq};
+
+    #[test]
+    fn test_evaluate() {
+        let batch1 = record_batch!(("id", UInt64, [0, 100, 100, 200])).unwrap();
+        let batch2 = record_batch!(("id", UInt64, [100, 100, 101, 300])).unwrap();
+        {
+            let mut predicate = AislePredicate::new(ProjectionMask::all(), |batch| {
+                let datum = Arc::new(UInt64Array::new_scalar(100)) as Arc<dyn Datum>;
+                gt(batch.column(0), datum.as_ref())
+            });
+
+            assert_eq!(
+                predicate
+                    .evaluate(batch1.clone())
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.unwrap())
+                    .collect::<Vec<bool>>(),
+                vec![false, false, false, true]
+            );
+            assert_eq!(
+                predicate
+                    .evaluate(batch2.clone())
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.unwrap())
+                    .collect::<Vec<bool>>(),
+                vec![false, false, true, true]
+            );
+        }
+        {
+            let mut predicate = AislePredicate::new(ProjectionMask::all(), |batch| {
+                let datum = Arc::new(UInt64Array::new_scalar(100)) as Arc<dyn Datum>;
+                lt(batch.column(0), datum.as_ref())
+            });
+
+            assert_eq!(
+                predicate
+                    .evaluate(batch1.clone())
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.unwrap())
+                    .collect::<Vec<bool>>(),
+                vec![true, false, false, false]
+            );
+            assert_eq!(
+                predicate
+                    .evaluate(batch2.clone())
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.unwrap())
+                    .collect::<Vec<bool>>(),
+                vec![false, false, false, false]
+            );
+        }
+        {
+            let mut predicate = AislePredicate::new(ProjectionMask::all(), |batch| {
+                let datum = Arc::new(UInt64Array::new_scalar(100)) as Arc<dyn Datum>;
+                lt_eq(batch.column(0), datum.as_ref())
+            });
+
+            assert_eq!(
+                predicate
+                    .evaluate(batch1.clone())
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.unwrap())
+                    .collect::<Vec<bool>>(),
+                vec![true, true, true, false]
+            );
+            assert_eq!(
+                predicate
+                    .evaluate(batch2.clone())
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.unwrap())
+                    .collect::<Vec<bool>>(),
+                vec![true, true, false, false]
+            );
+        }
+    }
+
+    #[test]
+    fn test_evaluate_merge() {
+        let batch1 = record_batch!(("id", UInt64, [0, 100, 100, 200])).unwrap();
+        let batch2 = record_batch!(("id", UInt64, [100, 100, 101, 300])).unwrap();
+        {
+            let mut predicate = AislePredicate::new(ProjectionMask::all(), |batch| {
+                let datum = Arc::new(UInt64Array::new_scalar(100)) as Arc<dyn Datum>;
+                gt(batch.column(0), datum.as_ref())
+            });
+            // [false, false, false, true];
+            // [false, false, true, true];
+            let res = evaluate_merge(&mut predicate, batch1.clone(), batch2.clone()).unwrap();
+            assert_eq!(res, vec![false, false, true, true]);
+        }
+        {
+            let mut predicate = AislePredicate::new(ProjectionMask::all(), |batch| {
+                let datum = Arc::new(UInt64Array::new_scalar(100)) as Arc<dyn Datum>;
+                lt(batch.column(0), datum.as_ref())
+            });
+
+            dbg!(predicate.evaluate(batch1.clone()).unwrap());
+            dbg!(predicate.evaluate(batch2.clone()).unwrap());
+            // [true, false, false, false];
+            // [false, false, false, false];
+            let res = evaluate_merge(&mut predicate, batch1.clone(), batch2.clone()).unwrap();
+            assert_eq!(res, vec![true, false, false, false]);
+        }
+    }
 }
