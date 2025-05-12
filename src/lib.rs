@@ -12,14 +12,3 @@ pub enum Error {
     #[error("invalid argument")]
     InvalidArgumentError(String),
 }
-
-#[derive(Clone)]
-pub struct BooleanArray {
-    array: arrow::array::BooleanArray,
-}
-
-impl BooleanArray {
-    pub(crate) fn new(array: arrow::array::BooleanArray) -> Self {
-        Self { array }
-    }
-}

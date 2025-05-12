@@ -1,13 +1,10 @@
 use std::sync::Arc;
 
 use arrow::array::{BooleanArray, RecordBatch};
-use arrow_schema::{ArrowError, Field, Schema};
+use arrow_schema::{Field, Schema};
 use parquet::{
-    arrow::{
-        ProjectionMask,
-        arrow_reader::{
-            ArrowPredicate, RowSelection, RowSelector, statistics::StatisticsConverter,
-        },
+    arrow::arrow_reader::{
+        ArrowPredicate, RowSelection, RowSelector, statistics::StatisticsConverter,
     },
     errors::ParquetError,
     file::metadata::{ColumnChunkMetaData, ParquetMetaData, RowGroupMetaData},
@@ -33,40 +30,13 @@ impl From<RowFilter> for parquet::arrow::arrow_reader::RowFilter {
     }
 }
 
-#[derive(Clone)]
-pub struct AislePredicate<F> {
-    projection: ProjectionMask,
-    // p: ArrowPredicateFn<F>,
-    f: F,
+pub struct Filter {
+    pub(crate) array: BooleanArray,
 }
 
-impl<F> AislePredicate<F>
-where
-    F: FnMut(RecordBatch) -> Result<crate::BooleanArray, ArrowError> + Send + 'static,
-{
-    /// Create a new [`ArrowPredicateFn`]. `f` will be passed batches
-    /// that contains the columns specified in `projection`
-    /// and returns a [`BooleanArray`] that describes which rows should
-    /// be passed along
-    pub fn new(projection: ProjectionMask, f: F) -> Self {
-        Self { projection, f }
-    }
-}
-
-impl<F> ArrowPredicate for AislePredicate<F>
-where
-    F: FnMut(RecordBatch) -> Result<crate::BooleanArray, ArrowError> + Send + 'static,
-{
-    fn projection(&self) -> &ProjectionMask {
-        &self.projection
-    }
-
-    fn evaluate(
-        &mut self,
-        batch: arrow::array::RecordBatch,
-    ) -> std::result::Result<BooleanArray, arrow_schema::ArrowError> {
-        let res = (self.f)(batch)?;
-        Ok(res.array)
+impl Filter {
+    pub(crate) fn new(array: BooleanArray) -> Self {
+        Self { array }
     }
 }
 
@@ -98,6 +68,11 @@ pub(crate) fn filter_row_groups(
     }
 
     let mut schema = vec![];
+    let mut row_group_metadatas = Vec::with_capacity(row_group_indices.len());
+
+    for idx in row_group_indices.iter() {
+        row_group_metadatas.push(metadata.row_group(*idx));
+    }
 
     for (col_idx, _) in projected_columns.iter() {
         let field = arrow_schema.field(*col_idx);
@@ -118,8 +93,8 @@ pub(crate) fn filter_row_groups(
             arrow_schema,
             metadata.file_metadata().schema_descr(),
         )?;
-        let mins = convert.row_group_mins(metadata.row_groups())?;
-        let maxes = convert.row_group_maxes(metadata.row_groups())?;
+        let mins = convert.row_group_mins(row_group_metadatas.clone().into_iter())?;
+        let maxes = convert.row_group_maxes(row_group_metadatas.clone().into_iter())?;
         max_batch.push(maxes);
         min_batch.push(mins);
     }
@@ -313,8 +288,11 @@ mod tests {
     use arrow::array::{Datum, UInt64Array, record_batch};
     use parquet::arrow::{ProjectionMask, arrow_reader::ArrowPredicate};
 
-    use super::{AislePredicate, evaluate_merge};
-    use crate::ord::{gt, lt, lt_eq};
+    use super::evaluate_merge;
+    use crate::{
+        ord::{gt, lt, lt_eq},
+        reader::predicate::AislePredicate,
+    };
 
     #[test]
     fn test_evaluate() {

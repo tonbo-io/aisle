@@ -18,6 +18,7 @@ futures-util = "0.3.31"
 arrow = { version = "55.0.0", default-features = false }
 
 [dev-dependencies]
+rand = "0.8"
 tokio = { version = "1.44.2", features = ["full"] }
 fusio = { git = "https://github.com/tonbo-io/fusio.git", branch = "main", package = "fusio", features = [
     "tokio",
