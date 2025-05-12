@@ -2,6 +2,7 @@ use thiserror::Error;
 
 pub mod ord;
 pub mod reader;
+pub use reader::*;
 
 #[derive(Debug, Error)]
 pub enum Error {

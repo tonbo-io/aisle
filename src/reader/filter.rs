@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use arrow::array::{BooleanArray, RecordBatch};
+use arrow::{
+    array::{BooleanArray, RecordBatch},
+    buffer::BooleanBuffer,
+};
 use arrow_schema::{Field, Schema};
 use parquet::{
     arrow::arrow_reader::{
@@ -11,22 +14,27 @@ use parquet::{
     format::PageLocation,
 };
 
+use super::predicate::{AisleArrowPredicate, AislePredicate};
+
 pub struct RowFilter {
     /// A list of [`ArrowPredicate`]
-    pub(crate) predicates: Vec<Box<dyn ArrowPredicate>>,
-    // pub(crate) predicates: Vec<Box<dyn Predicate>>,
+    pub(crate) predicates: Vec<Box<dyn AislePredicate>>,
 }
 
 impl RowFilter {
-    /// Create a new [`RowFilter`] from an array of [`ArrowPredicate`]
-    pub fn new(predicates: Vec<Box<dyn ArrowPredicate>>) -> Self {
+    // /// Create a new [`RowFilter`] from an array of [`ArrowPredicate`]
+    pub fn new(predicates: Vec<Box<dyn AislePredicate>>) -> Self {
         Self { predicates }
     }
 }
 
 impl From<RowFilter> for parquet::arrow::arrow_reader::RowFilter {
     fn from(filter: RowFilter) -> Self {
-        parquet::arrow::arrow_reader::RowFilter::new(filter.predicates)
+        let mut predicates: Vec<Box<dyn ArrowPredicate>> = vec![];
+        for pred in filter.predicates.into_iter() {
+            predicates.push(Box::new(AisleArrowPredicate::new(pred)));
+        }
+        parquet::arrow::arrow_reader::RowFilter::new(predicates)
     }
 }
 
@@ -38,6 +46,16 @@ impl Filter {
     pub(crate) fn new(array: BooleanArray) -> Self {
         Self { array }
     }
+
+    pub fn fill(len: usize, value: bool) -> Self {
+        Self {
+            array: BooleanArray::new(BooleanBuffer::collect_bool(len, |_| value), None),
+        }
+    }
+
+    pub(crate) fn boolean_array(&self) -> &BooleanArray {
+        &self.array
+    }
 }
 
 #[allow(unused)]
@@ -45,7 +63,7 @@ pub(crate) fn filter_row_groups(
     metadata: &ParquetMetaData,
     arrow_schema: &Schema,
     row_group_indices: &[usize],
-    predicate: &mut dyn ArrowPredicate,
+    predicate: &mut dyn AislePredicate,
 ) -> Result<Vec<usize>, ParquetError> {
     if metadata.row_groups().is_empty() || row_group_indices.is_empty() {
         return Ok(vec![]);
@@ -119,7 +137,7 @@ pub(crate) fn evaluate_predicate(
     arrow_schema: &Schema,
     row_group_indices: &[usize],
     input_selection: Option<RowSelection>,
-    predicate: &mut dyn ArrowPredicate,
+    predicate: &mut dyn AislePredicate,
 ) -> Result<RowSelection, ParquetError> {
     if metadata.row_groups().is_empty() || row_group_indices.is_empty() {
         return Ok(RowSelection::from_iter([]));
@@ -149,7 +167,7 @@ pub(crate) fn evaluate_predicate(
         // two case:
         //   1. projected_columns.len == 0: predicate does not work
         //   2. projected_columns.len > 1: we do it in the future
-        let total_rows = rg.column(1).num_values() as usize;
+        let total_rows = rg.column(0).num_values() as usize;
         return Ok(RowSelection::from_consecutive_ranges(
             [0..total_rows].into_iter(),
             total_rows,
@@ -260,7 +278,7 @@ fn row_group_page_row_counts(
 /// - the column number of two batches should be the same.
 /// - the row number of two batches should be the same.
 fn evaluate_merge(
-    predicate: &mut dyn ArrowPredicate,
+    predicate: &mut dyn AislePredicate,
     batch1: RecordBatch,
     batch2: RecordBatch,
 ) -> Result<Vec<bool>, ParquetError> {
@@ -271,12 +289,13 @@ fn evaluate_merge(
         return Err(ParquetError::ArrowError("schema should be the same".into()));
     }
 
-    let array1 = predicate.evaluate(batch1).unwrap();
-    let array2 = predicate.evaluate(batch2).unwrap();
+    let filter1 = predicate.evaluate(batch1)?;
+    let filter2 = predicate.evaluate(batch2)?;
 
-    Ok(array1
+    Ok(filter1
+        .boolean_array()
         .iter()
-        .zip(array2.iter())
+        .zip(filter2.boolean_array().iter())
         .map(|(max, min)| max.unwrap_or(true) || min.unwrap_or(true))
         .collect())
 }
@@ -286,12 +305,13 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::array::{Datum, UInt64Array, record_batch};
-    use parquet::arrow::{ProjectionMask, arrow_reader::ArrowPredicate};
+    use parquet::arrow::ProjectionMask;
 
     use super::evaluate_merge;
     use crate::{
         ord::{gt, lt, lt_eq},
-        reader::predicate::AislePredicate,
+        predicate::AislePredicate,
+        reader::predicate::AislePredicateFn,
     };
 
     #[test]
@@ -299,7 +319,7 @@ mod tests {
         let batch1 = record_batch!(("id", UInt64, [0, 100, 100, 200])).unwrap();
         let batch2 = record_batch!(("id", UInt64, [100, 100, 101, 300])).unwrap();
         {
-            let mut predicate = AislePredicate::new(ProjectionMask::all(), |batch| {
+            let mut predicate = AislePredicateFn::new(ProjectionMask::all(), |batch| {
                 let datum = Arc::new(UInt64Array::new_scalar(100)) as Arc<dyn Datum>;
                 gt(batch.column(0), datum.as_ref())
             });
@@ -308,6 +328,7 @@ mod tests {
                 predicate
                     .evaluate(batch1.clone())
                     .unwrap()
+                    .array
                     .iter()
                     .map(|v| v.unwrap())
                     .collect::<Vec<bool>>(),
@@ -317,6 +338,7 @@ mod tests {
                 predicate
                     .evaluate(batch2.clone())
                     .unwrap()
+                    .array
                     .iter()
                     .map(|v| v.unwrap())
                     .collect::<Vec<bool>>(),
@@ -324,7 +346,7 @@ mod tests {
             );
         }
         {
-            let mut predicate = AislePredicate::new(ProjectionMask::all(), |batch| {
+            let mut predicate = AislePredicateFn::new(ProjectionMask::all(), |batch| {
                 let datum = Arc::new(UInt64Array::new_scalar(100)) as Arc<dyn Datum>;
                 lt(batch.column(0), datum.as_ref())
             });
@@ -333,6 +355,7 @@ mod tests {
                 predicate
                     .evaluate(batch1.clone())
                     .unwrap()
+                    .array
                     .iter()
                     .map(|v| v.unwrap())
                     .collect::<Vec<bool>>(),
@@ -342,6 +365,7 @@ mod tests {
                 predicate
                     .evaluate(batch2.clone())
                     .unwrap()
+                    .array
                     .iter()
                     .map(|v| v.unwrap())
                     .collect::<Vec<bool>>(),
@@ -349,7 +373,7 @@ mod tests {
             );
         }
         {
-            let mut predicate = AislePredicate::new(ProjectionMask::all(), |batch| {
+            let mut predicate = AislePredicateFn::new(ProjectionMask::all(), |batch| {
                 let datum = Arc::new(UInt64Array::new_scalar(100)) as Arc<dyn Datum>;
                 lt_eq(batch.column(0), datum.as_ref())
             });
@@ -358,6 +382,7 @@ mod tests {
                 predicate
                     .evaluate(batch1.clone())
                     .unwrap()
+                    .array
                     .iter()
                     .map(|v| v.unwrap())
                     .collect::<Vec<bool>>(),
@@ -367,6 +392,7 @@ mod tests {
                 predicate
                     .evaluate(batch2.clone())
                     .unwrap()
+                    .array
                     .iter()
                     .map(|v| v.unwrap())
                     .collect::<Vec<bool>>(),
@@ -380,7 +406,7 @@ mod tests {
         let batch1 = record_batch!(("id", UInt64, [0, 100, 100, 200])).unwrap();
         let batch2 = record_batch!(("id", UInt64, [100, 100, 101, 300])).unwrap();
         {
-            let mut predicate = AislePredicate::new(ProjectionMask::all(), |batch| {
+            let mut predicate = AislePredicateFn::new(ProjectionMask::all(), |batch| {
                 let datum = Arc::new(UInt64Array::new_scalar(100)) as Arc<dyn Datum>;
                 gt(batch.column(0), datum.as_ref())
             });
@@ -390,13 +416,11 @@ mod tests {
             assert_eq!(res, vec![false, false, true, true]);
         }
         {
-            let mut predicate = AislePredicate::new(ProjectionMask::all(), |batch| {
+            let mut predicate = AislePredicateFn::new(ProjectionMask::all(), |batch| {
                 let datum = Arc::new(UInt64Array::new_scalar(100)) as Arc<dyn Datum>;
                 lt(batch.column(0), datum.as_ref())
             });
 
-            dbg!(predicate.evaluate(batch1.clone()).unwrap());
-            dbg!(predicate.evaluate(batch2.clone()).unwrap());
             // [true, false, false, false];
             // [false, false, false, false];
             let res = evaluate_merge(&mut predicate, batch1.clone(), batch2.clone()).unwrap();
