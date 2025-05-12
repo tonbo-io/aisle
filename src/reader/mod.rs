@@ -21,7 +21,6 @@ pub struct ParquetRecordBatchStreamBuilder<T>
 where
     T: AsyncFileReader,
 {
-    // pub(crate) schema: SchemaRef,
     builder: parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder<T>,
     projection: ProjectionMask,
     row_groups: Option<Vec<usize>>,
@@ -131,9 +130,7 @@ where
 
         if let Some(filter) = self.filter {
             // TODO: do predicate pushdown
-            builder = builder.with_row_filter(parquet::arrow::arrow_reader::RowFilter::new(
-                filter.predicates,
-            ));
+            builder = builder.with_row_filter(filter.into());
         }
 
         if let Some(limit) = self.limit {
@@ -219,7 +216,7 @@ mod tests {
     use parquet::{
         arrow::{
             AsyncArrowWriter, ProjectionMask,
-            arrow_reader::{ArrowPredicate, ArrowReaderOptions, statistics::StatisticsConverter},
+            arrow_reader::{ArrowReaderOptions, statistics::StatisticsConverter},
             async_reader::AsyncFileReader,
         },
         basic::Compression,
@@ -235,8 +232,10 @@ mod tests {
 
     use crate::{
         ord::{gt, lt},
-        reader::{ParquetRecordBatchStreamBuilder, filter::RowFilter, predicate::AislePredicate},
+        reader::{ParquetRecordBatchStreamBuilder, filter::RowFilter, predicate::AislePredicateFn},
     };
+
+    use super::predicate::AislePredicate;
 
     fn get_ordered_record_batch(record_size: usize) -> RecordBatch {
         let mut ids = vec![];
@@ -276,8 +275,9 @@ mod tests {
     async fn load_data(
         parquet_path: Path,
         writer_properties: WriterProperties,
-        record_batch: RecordBatch,
+        record_size: usize,
     ) {
+        let ordered = writer_properties.sorting_columns().is_some();
         let fs = Arc::new(TokioFs {}) as Arc<dyn DynFs>;
 
         let schema = Arc::new(Schema::new(vec![
@@ -299,7 +299,17 @@ mod tests {
             Some(writer_properties),
         )
         .unwrap();
-        writer.write(&record_batch).await.unwrap();
+        if ordered {
+            writer
+                .write(&get_ordered_record_batch(record_size))
+                .await
+                .unwrap();
+        } else {
+            writer
+                .write(&get_random_record_batch(record_size))
+                .await
+                .unwrap();
+        }
         writer.close().await.unwrap();
     }
 
@@ -307,7 +317,7 @@ mod tests {
         dir: &str,
         filename: &str,
         writer_properties: WriterProperties,
-        record_batch: RecordBatch,
+        record_size: usize,
     ) {
         let parquet_path = format!("{}/{}", dir, filename);
 
@@ -316,7 +326,7 @@ mod tests {
                 std::fs::create_dir_all(dir).unwrap();
             }
             let path = Path::new(dir).unwrap().child(filename);
-            load_data(path, writer_properties, record_batch).await;
+            load_data(path, writer_properties, record_size).await;
         }
     }
 
@@ -336,7 +346,7 @@ mod tests {
 
     async fn read_parquet(
         path: &Path,
-        predicates: Vec<Box<dyn ArrowPredicate>>,
+        predicates: Vec<Box<dyn AislePredicate>>,
         enable_page_filter: bool,
         enable_row_group_filter: bool,
     ) -> Result<Vec<RecordBatch>, ParquetError> {
@@ -356,7 +366,7 @@ mod tests {
                 .unwrap();
 
             let mut reader = builder
-                .with_row_filter(parquet::arrow::arrow_reader::RowFilter::new(predicates))
+                .with_row_filter(RowFilter::new(predicates).into())
                 .build()?;
 
             while let Some(batch) = reader.next().await {
@@ -409,27 +419,21 @@ mod tests {
 
         let filename = "data.parquet";
         let dir = "./data";
-        try_load_data(
-            dir,
-            filename,
-            properties,
-            get_ordered_record_batch(8 * 1024 * 1024),
-        )
-        .await;
+        try_load_data(dir, filename, properties, 8 * 1024 * 1024).await;
 
         let parquet_file_path = Path::new(dir).unwrap().child(filename);
 
         let metadata = get_parquet_metadata(&parquet_file_path).await.unwrap();
         let parquet_schema = metadata.file_metadata().schema_descr();
 
-        let right_range_p = AislePredicate::new(
+        let right_range_p = AislePredicateFn::new(
             ProjectionMask::roots(parquet_schema, vec![0]),
             move |batch| {
                 let datum = Arc::new(UInt64Array::new_scalar(100 * 1024)) as Arc<dyn Datum>;
                 gt(batch.column(0), datum.as_ref())
             },
         );
-        let left_range_p = AislePredicate::new(
+        let left_range_p = AislePredicateFn::new(
             ProjectionMask::roots(parquet_schema, vec![0]),
             move |batch| {
                 let datum = Arc::new(UInt64Array::new_scalar(100 * 1024 + 100)) as Arc<dyn Datum>;
@@ -437,13 +441,11 @@ mod tests {
             },
         );
 
-        // use crate::reader::filter::Predicate;
-        // left_range_p.can_push_down();
-        let predicates: Vec<Box<dyn ArrowPredicate>> = vec![
+        let predicates: Vec<Box<dyn AislePredicate>> = vec![
             Box::new(right_range_p.clone()),
             Box::new(left_range_p.clone()),
         ];
-        let predicates2: Vec<Box<dyn ArrowPredicate>> =
+        let predicates2: Vec<Box<dyn AislePredicate>> =
             vec![Box::new(right_range_p), Box::new(left_range_p)];
 
         {
@@ -471,11 +473,11 @@ mod tests {
 
     async fn read_parquet_scan_cross_page(
         writer_properties: WriterProperties,
-        record_batch: RecordBatch,
+        record_size: usize,
         dir: &str,
         filename: &str,
     ) {
-        try_load_data(dir, filename, writer_properties, record_batch).await;
+        try_load_data(dir, filename, writer_properties, record_size).await;
 
         let parquet_file_path = Path::new(dir).unwrap().child(filename);
 
@@ -511,44 +513,68 @@ mod tests {
             {
                 // range include page
                 let page_index = rng.gen_range(0..mins.len());
-                let left = maxes.get().0.as_primitive::<UInt64Type>().value(page_index) - 10;
+                let left = mins.get().0.as_primitive::<UInt64Type>().value(page_index) - 10;
                 let right = maxes.get().0.as_primitive::<UInt64Type>().value(page_index) + 10;
-                ranges.push((left, right));
+                ranges.push(vec![(left, right)]);
 
                 // range include page left bound
-                let left = maxes.get().0.as_primitive::<UInt64Type>().value(page_index) - 20;
+                let left = mins.get().0.as_primitive::<UInt64Type>().value(page_index) - 20;
                 let right = maxes.get().0.as_primitive::<UInt64Type>().value(page_index) - 10;
-                ranges.push((left, right));
+                ranges.push(vec![(left, right)]);
 
                 // range include page right bound
-                let left = maxes.get().0.as_primitive::<UInt64Type>().value(page_index) + 20;
-                let right = maxes.get().0.as_primitive::<UInt64Type>().value(page_index) + 10;
-                ranges.push((left, right));
+                let left = mins.get().0.as_primitive::<UInt64Type>().value(page_index) + 10;
+                let right = maxes.get().0.as_primitive::<UInt64Type>().value(page_index) + 20;
+                ranges.push(vec![(left, right)]);
+
+                // overlapped two ranges
+                let left1 = mins.get().0.as_primitive::<UInt64Type>().value(page_index) - 10;
+                let right1 = maxes.get().0.as_primitive::<UInt64Type>().value(page_index) + 20;
+                let left2 = right - 10;
+                let right2 = maxes.get().0.as_primitive::<UInt64Type>().value(page_index) + 100;
+                ranges.push(vec![(left1, right1), (left2, right2)]);
+
+                // multiple ranges
+                let page_idx1 = rng.gen_range(0..mins.len());
+                let left1 = mins.get().0.as_primitive::<UInt64Type>().value(page_idx1) - 10;
+                let right1 = maxes.get().0.as_primitive::<UInt64Type>().value(page_idx1) + 20;
+
+                let page_idx2 = rng.gen_range(0..mins.len());
+                let left2 = mins.get().0.as_primitive::<UInt64Type>().value(page_idx2) + 10;
+                let right2 = maxes.get().0.as_primitive::<UInt64Type>().value(page_idx2) + 20;
+
+                let page_idx3 = rng.gen_range(0..mins.len());
+                let left3 = mins.get().0.as_primitive::<UInt64Type>().value(page_idx3) - 10;
+                let right3 = maxes.get().0.as_primitive::<UInt64Type>().value(page_idx3) - 20;
+
+                ranges.push(vec![(left1, right1), (left2, right2), (left3, right3)]);
             }
 
-            for (left, right) in ranges {
-                let right_range_p = AislePredicate::new(
-                    ProjectionMask::roots(parquet_schema, vec![0]),
-                    move |batch| {
-                        let datum = Arc::new(UInt64Array::new_scalar(left)) as Arc<dyn Datum>;
-                        gt(batch.column(0), datum.as_ref())
-                    },
-                );
+            for range in ranges {
+                let mut predicates: Vec<Box<dyn AislePredicate>> = Vec::with_capacity(range.len());
+                let mut predicates2: Vec<Box<dyn AislePredicate>> = Vec::with_capacity(range.len());
+                for (left, right) in range {
+                    let left_range_p = AislePredicateFn::new(
+                        ProjectionMask::roots(parquet_schema, vec![0]),
+                        move |batch| {
+                            let datum = Arc::new(UInt64Array::new_scalar(left)) as Arc<dyn Datum>;
+                            gt(batch.column(0), datum.as_ref())
+                        },
+                    );
 
-                let left_range_p = AislePredicate::new(
-                    ProjectionMask::roots(parquet_schema, vec![0]),
-                    move |batch| {
-                        let datum = Arc::new(UInt64Array::new_scalar(right)) as Arc<dyn Datum>;
-                        lt(batch.column(0), datum.as_ref())
-                    },
-                );
+                    let right_range_p = AislePredicateFn::new(
+                        ProjectionMask::roots(parquet_schema, vec![0]),
+                        move |batch| {
+                            let datum = Arc::new(UInt64Array::new_scalar(right)) as Arc<dyn Datum>;
+                            lt(batch.column(0), datum.as_ref())
+                        },
+                    );
+                    predicates.push(Box::new(left_range_p.clone()));
+                    predicates.push(Box::new(right_range_p.clone()));
 
-                let predicates: Vec<Box<dyn ArrowPredicate>> = vec![
-                    Box::new(right_range_p.clone()),
-                    Box::new(left_range_p.clone()),
-                ];
-                let predicates2: Vec<Box<dyn ArrowPredicate>> =
-                    vec![Box::new(right_range_p), Box::new(left_range_p)];
+                    predicates2.push(Box::new(left_range_p));
+                    predicates2.push(Box::new(right_range_p));
+                }
 
                 {
                     let expected: Vec<u64> =
@@ -581,25 +607,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_read_parquet_scan_cross_page_ordered() {
         let properties = writer_properties(Some(vec!["id".to_string()]), Some(vec![0]));
-        read_parquet_scan_cross_page(
-            properties,
-            get_ordered_record_batch(8 * 1024 * 1024),
-            "./data",
-            "data.parquet",
-        )
-        .await;
+        read_parquet_scan_cross_page(properties, 8 * 1024 * 1024, "./data", "data.parquet").await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_read_parquet_scan_cross_page_unordered() {
         let properties = writer_properties(None, None);
-        read_parquet_scan_cross_page(
-            properties,
-            get_random_record_batch(8 * 1024 * 1024),
-            "./data",
-            "random.parquet",
-        )
-        .await;
+        read_parquet_scan_cross_page(properties, 8 * 1024 * 1024, "./data", "random.parquet").await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -609,13 +623,7 @@ mod tests {
         let filename = "data.parquet";
         let dir = "./data";
         let record_num = 8 * 1024 * 1024;
-        try_load_data(
-            dir,
-            filename,
-            properties,
-            get_ordered_record_batch(record_num),
-        )
-        .await;
+        try_load_data(dir, filename, properties, record_num).await;
 
         let parquet_file_path = Path::new(dir).unwrap().child(filename);
 
@@ -629,14 +637,14 @@ mod tests {
             let left = rng.gen_range(0..record_num);
             let right = rng.gen_range(left..record_num);
 
-            let left_range_p = AislePredicate::new(
+            let left_range_p = AislePredicateFn::new(
                 ProjectionMask::roots(parquet_schema, vec![0]),
                 move |batch| {
                     let datum = Arc::new(UInt64Array::new_scalar(left as u64)) as Arc<dyn Datum>;
                     gt(batch.column(0), datum.as_ref())
                 },
             );
-            let right_range_p = AislePredicate::new(
+            let right_range_p = AislePredicateFn::new(
                 ProjectionMask::roots(parquet_schema, vec![0]),
                 move |batch| {
                     let datum = Arc::new(UInt64Array::new_scalar(right as u64)) as Arc<dyn Datum>;
@@ -647,7 +655,7 @@ mod tests {
         }
         let start = std::time::Instant::now();
         for (left, right) in ranges.iter() {
-            let predicates: Vec<Box<dyn ArrowPredicate>> =
+            let predicates: Vec<Box<dyn AislePredicate>> =
                 vec![Box::new(left.clone()), Box::new(right.clone())];
 
             read_parquet(&parquet_file_path, predicates, false, false)
@@ -658,7 +666,7 @@ mod tests {
 
         let start = std::time::Instant::now();
         for (left, right) in ranges.iter() {
-            let predicates: Vec<Box<dyn ArrowPredicate>> =
+            let predicates: Vec<Box<dyn AislePredicate>> =
                 vec![Box::new(left.clone()), Box::new(right.clone())];
 
             read_parquet(&parquet_file_path, predicates, true, true)
