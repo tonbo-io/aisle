@@ -10,10 +10,6 @@ parquet = { version = "55.0.0", default-features = false, features = [
     "arrow",
     "async",
 ] }
-datafusion-common = { version = "46.0.1", default-features = false, features = [
-    "parquet",
-] }
-datafusion-expr = { version = "46.0.1", default-features = false }
 arrow-schema = { version = "55.0.0", default-features = false }
 fusio = { git = "https://github.com/tonbo-io/fusio.git", branch = "main", package = "fusio" }
 fusio-parquet = { git = "https://github.com/tonbo-io/fusio.git", branch = "main", package = "fusio-parquet" }
@@ -22,9 +18,15 @@ futures-util = "0.3.31"
 arrow = { version = "55.0.0", default-features = false }
 
 [dev-dependencies]
+rand = "0.8"
 tokio = { version = "1.44.2", features = ["full"] }
 fusio = { git = "https://github.com/tonbo-io/fusio.git", branch = "main", package = "fusio", features = [
     "tokio",
+] }
+parquet = { version = "55.0.0", default-features = false, features = [
+    "arrow",
+    "async",
+    "lz4",
 ] }
 
 [profile.release]
