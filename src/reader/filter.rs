@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use arrow::{
-    array::{BooleanArray, RecordBatch},
-    buffer::BooleanBuffer,
-};
+use arrow::array::{BooleanArray, RecordBatch};
 use arrow_schema::{Field, Schema};
 use parquet::{
     arrow::arrow_reader::{
@@ -45,12 +42,6 @@ pub struct Filter {
 impl Filter {
     pub(crate) fn new(array: BooleanArray) -> Self {
         Self { array }
-    }
-
-    pub fn fill(len: usize, value: bool) -> Self {
-        Self {
-            array: BooleanArray::new(BooleanBuffer::collect_bool(len, |_| value), None),
-        }
     }
 
     pub(crate) fn boolean_array(&self) -> &BooleanArray {
