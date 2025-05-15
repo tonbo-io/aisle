@@ -6,28 +6,27 @@ description = "An efficient Parquet file reader."
 license = "Apache-2.0"
 
 [dependencies]
-parquet = { version = "55.0.0", default-features = false, features = [
+arrow = { version = "55.1.0", default-features = false }
+arrow-schema = { version = "55.1.0", default-features = false }
+futures-util = "0.3.31"
+parquet = { version = "55.1.0", default-features = false, features = [
     "arrow",
     "async",
 ] }
-arrow-schema = { version = "55.0.0", default-features = false }
-fusio = { git = "https://github.com/tonbo-io/fusio.git", branch = "main", package = "fusio" }
-fusio-parquet = { git = "https://github.com/tonbo-io/fusio.git", branch = "main", package = "fusio-parquet" }
-thiserror = "2.0.12"
-futures-util = "0.3.31"
-arrow = { version = "55.0.0", default-features = false }
 
 [dev-dependencies]
-rand = "0.8"
-tokio = { version = "1.44.2", features = ["full"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
 fusio = { git = "https://github.com/tonbo-io/fusio.git", branch = "main", package = "fusio", features = [
     "tokio",
 ] }
+fusio-parquet = { git = "https://github.com/tonbo-io/fusio.git", branch = "main", package = "fusio-parquet" }
 parquet = { version = "55.0.0", default-features = false, features = [
     "arrow",
     "async",
     "lz4",
 ] }
+rand = "0.8"
+tokio = { version = "1.44.2", features = ["full"] }
 
 [profile.release]
 lto = true

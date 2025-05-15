@@ -1,11 +1,10 @@
-use std::result::Result;
-use std::sync::Arc;
+use std::{result::Result, sync::Arc};
 
 use arrow_schema::SchemaRef;
 use filter::{RowFilter, evaluate_predicate, filter_row_groups};
-pub use parquet::arrow::ProjectionMask;
 pub use parquet::{
     arrow::{
+        ProjectionMask,
         arrow_reader::ArrowReaderOptions,
         async_reader::{AsyncFileReader, ParquetRecordBatchStream},
     },
@@ -33,6 +32,7 @@ impl<T> ParquetRecordBatchStreamBuilder<T>
 where
     T: AsyncFileReader + 'static,
 {
+    /// Create a new [`ParquetRecordBatchStreamBuilder`] with the provided async source.
     pub async fn new(reader: T) -> Result<Self, ParquetError> {
         let builder =
             parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder::new(reader).await?;
@@ -43,7 +43,7 @@ where
             row_groups: None,
             filter: None,
             limit: None,
-            enable_page_index: true,
+            enable_page_index: false,
         })
     }
 
@@ -53,6 +53,7 @@ where
         reader: T,
         options: ArrowReaderOptions,
     ) -> Result<Self, ParquetError> {
+        let enable_page_index = options.page_index();
         let builder =
             parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder::new_with_options(
                 reader, options,
@@ -65,9 +66,7 @@ where
             row_groups: None,
             filter: None,
             limit: None,
-
-            // TODO: set page index According to `ArrowReaderOptions`
-            enable_page_index: true,
+            enable_page_index,
         })
     }
 
@@ -77,7 +76,6 @@ where
         let metadata = builder.metadata();
         let arrow_schema = builder.schema();
 
-        // TOOD: using statistics to skip row groups
         let mut row_groups = match self.row_groups.take() {
             Some(row_groups) => row_groups,
             None => (0..metadata.num_row_groups()).collect::<Vec<usize>>(),
@@ -120,7 +118,7 @@ where
             .build()
     }
 
-    // convert this builder to arrow ParquetRecordBatchStreamBuilder
+    /// convert this builder to [`parquet::arrow::ParquetRecordBatchStreamBuilder`]
     pub fn into_raw_builder(self) -> parquet::arrow::ParquetRecordBatchStreamBuilder<T> {
         let mut builder = self.builder;
 
@@ -129,7 +127,6 @@ where
         }
 
         if let Some(filter) = self.filter {
-            // TODO: do predicate pushdown
             builder = builder.with_row_filter(filter.into());
         }
 
@@ -144,6 +141,9 @@ impl<T> ParquetRecordBatchStreamBuilder<T>
 where
     T: AsyncFileReader + 'static,
 {
+    /// Only read data from the provided row group indexes
+    ///
+    /// This is also called row group filtering
     pub fn with_row_groups(self, row_groups: Vec<usize>) -> Self {
         Self {
             row_groups: Some(row_groups),
@@ -151,6 +151,11 @@ where
         }
     }
 
+    /// Provide a [`RowFilter`] to skip decoding rows
+    ///
+    /// Row filters are applied to row group statistics and page statistics and finally applied to rows
+    ///
+    /// See [`parquet::arrow::ParquetRecordBatchStreamBuilder::with_row_filter`] for more detail
     pub fn with_row_filter(self, filter: RowFilter) -> Self {
         Self {
             filter: Some(filter),
@@ -166,6 +171,9 @@ where
         }
     }
 
+    /// Provide a limit to the number of rows to be read
+    ///
+    /// See [`parquet::arrow::ParquetRecordBatchStreamBuilder::with_limit`] for more detail
     pub fn with_limit(self, limit: usize) -> Self {
         Self {
             limit: Some(limit),
@@ -173,14 +181,17 @@ where
         }
     }
 
+    /// Returns a reference to the [`ParquetMetaData`] for this parquet file
     pub fn metadata(&self) -> &Arc<ParquetMetaData> {
         self.builder.metadata()
     }
 
+    /// Returns the parquet [`SchemaDescriptor`] for this parquet file
     pub fn parquet_schema(&self) -> &SchemaDescriptor {
         self.builder.parquet_schema()
     }
 
+    /// Returns the arrow [`SchemaRef`] for this parquet file
     pub fn schema(&self) -> &SchemaRef {
         self.builder.schema()
     }
@@ -189,7 +200,8 @@ where
     ///
     /// Returns `None` if the column does not have a bloom filter
     ///
-    /// We should call this function after other forms pruning, such as projection and predicate pushdown.
+    /// We should call this function after other forms pruning, such as projection and predicate
+    /// pushdown.
     pub async fn get_row_group_column_bloom_filter(
         &mut self,
         row_group_idx: usize,
@@ -230,12 +242,11 @@ mod tests {
     };
     use rand::{Rng, thread_rng};
 
+    use super::predicate::AislePredicate;
     use crate::{
-        ord::{gt, lt},
+        ord::{gt, gt_eq, lt, lt_eq},
         reader::{ParquetRecordBatchStreamBuilder, filter::RowFilter, predicate::AislePredicateFn},
     };
-
-    use super::predicate::AislePredicate;
 
     fn get_ordered_record_batch(record_size: usize) -> RecordBatch {
         let mut ids = vec![];
@@ -375,8 +386,10 @@ mod tests {
 
             Ok(batches)
         } else {
-            let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await.unwrap();
-            builder.enable_page_index = enable_page_filter;
+            let options = ArrowReaderOptions::new().with_page_index(enable_page_filter);
+            let builder = ParquetRecordBatchStreamBuilder::new_with_options(reader, options)
+                .await
+                .unwrap();
 
             let mut reader = builder
                 .with_row_filter(RowFilter::new(predicates))
@@ -614,6 +627,66 @@ mod tests {
     async fn test_read_parquet_scan_cross_page_unordered() {
         let properties = writer_properties(None, None);
         read_parquet_scan_cross_page(properties, 8 * 1024 * 1024, "./data", "random.parquet").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_read_parquet_eq() {
+        let properties = writer_properties(Some(vec!["id".into()]), Some(vec![0]));
+
+        let filename = "data.parquet";
+        let dir = "./data";
+        try_load_data(dir, filename, properties, 8 * 1024 * 1024).await;
+
+        let parquet_file_path = Path::new(dir).unwrap().child(filename);
+
+        let metadata = get_parquet_metadata(&parquet_file_path).await.unwrap();
+        let parquet_schema = metadata.file_metadata().schema_descr();
+
+        let mut rng = thread_rng();
+        let key = rng.gen_range(0..8 * 1024 * 1024);
+        let right_range_p = AislePredicateFn::new(
+            ProjectionMask::roots(parquet_schema, vec![0]),
+            move |batch| {
+                let datum = Arc::new(UInt64Array::new_scalar(key)) as Arc<dyn Datum>;
+                gt_eq(batch.column(0), datum.as_ref())
+            },
+        );
+        let left_range_p = AislePredicateFn::new(
+            ProjectionMask::roots(parquet_schema, vec![0]),
+            move |batch| {
+                let datum = Arc::new(UInt64Array::new_scalar(key)) as Arc<dyn Datum>;
+                lt_eq(batch.column(0), datum.as_ref())
+            },
+        );
+
+        let predicates: Vec<Box<dyn AislePredicate>> = vec![
+            Box::new(right_range_p.clone()),
+            Box::new(left_range_p.clone()),
+        ];
+        let predicates2: Vec<Box<dyn AislePredicate>> =
+            vec![Box::new(right_range_p), Box::new(left_range_p)];
+
+        {
+            let expected: Vec<u64> = read_parquet(&parquet_file_path, predicates2, false, false)
+                .await
+                .unwrap()
+                .iter()
+                .flat_map(|batch| {
+                    let ids = batch.column(0).as_primitive::<UInt64Type>();
+                    ids.values().to_vec()
+                })
+                .collect();
+            let actual: Vec<u64> = read_parquet(&parquet_file_path, predicates, true, true)
+                .await
+                .unwrap()
+                .iter()
+                .flat_map(|batch| {
+                    let ids = batch.column(0).as_primitive::<UInt64Type>();
+                    ids.values().to_vec()
+                })
+                .collect();
+            assert_eq!(expected, actual);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
