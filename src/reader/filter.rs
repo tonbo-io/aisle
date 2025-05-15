@@ -49,7 +49,6 @@ impl Filter {
     }
 }
 
-#[allow(unused)]
 pub(crate) fn filter_row_groups(
     metadata: &ParquetMetaData,
     arrow_schema: &Schema,
@@ -83,19 +82,12 @@ pub(crate) fn filter_row_groups(
         row_group_metadatas.push(metadata.row_group(*idx));
     }
 
-    for (col_idx, _) in projected_columns.iter() {
-        let field = arrow_schema.field(*col_idx);
-        schema.push(field.clone());
-    }
-
-    let schema = Arc::new(Schema::new(schema));
-
     let mut max_batch = vec![];
     let mut min_batch = vec![];
-    let mut selected_row_group_indices = vec![];
-
     for (col_idx, col) in projected_columns.iter() {
-        let col = rg.column(*col_idx);
+        let field = arrow_schema.field(*col_idx);
+        schema.push(field.clone());
+
         let col_name = col.column_descr().name();
         let convert = StatisticsConverter::try_new(
             col_name,
@@ -107,9 +99,13 @@ pub(crate) fn filter_row_groups(
         max_batch.push(maxes);
         min_batch.push(mins);
     }
+
+    let schema = Arc::new(Schema::new(schema));
+
     let max_record_batch = RecordBatch::try_new(schema.clone(), max_batch).unwrap();
     let min_record_batch = RecordBatch::try_new(schema, min_batch).unwrap();
 
+    let mut selected_row_group_indices = vec![];
     for (idx, selected) in evaluate_merge(predicate, max_record_batch, min_record_batch)?
         .iter()
         .enumerate()
@@ -217,6 +213,7 @@ pub(crate) fn evaluate_predicate(
     })
 }
 
+/// return the row counts of pages in the given row groups
 fn page_row_counts(
     metadata: &ParquetMetaData,
     row_group_indices: &[usize],
