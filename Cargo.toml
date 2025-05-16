@@ -18,6 +18,11 @@ harness = false
 name = "reader"
 required-features = ["tokio"]
 
+[[bench]]
+harness = false
+name = "read_bench"
+required-features = ["tokio"]
+
 [dependencies]
 arrow = { version = "55.1.0", default-features = false }
 arrow-schema = { version = "55.1.0", default-features = false }
