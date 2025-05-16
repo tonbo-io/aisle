@@ -1,29 +1,29 @@
 use std::sync::Arc;
 
 use aisle::{
-    ProjectionMask,
     predicate::AislePredicate,
-    reader::{ParquetRecordBatchStreamBuilder, predicate::AislePredicateFn},
+    reader::{predicate::AislePredicateFn, ParquetRecordBatchStreamBuilder},
+    ProjectionMask,
 };
 use arrow::{
-    array::{ArrayRef, Datum, RecordBatch, StringArray, UInt8Array, UInt64Array},
+    array::{ArrayRef, Datum, RecordBatch, StringArray, UInt64Array, UInt8Array},
     datatypes::{DataType, Field, Schema},
 };
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use fusio::{DynFs, disk::TokioFs, fs::OpenOptions, path::Path};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use fusio::{disk::TokioFs, fs::OpenOptions, path::Path, DynFs};
 use fusio_parquet::{reader::AsyncReader, writer::AsyncWriter};
 use futures_util::StreamExt;
 use parquet::{
     arrow::{
-        AsyncArrowWriter,
         arrow_reader::{ArrowPredicate, ArrowPredicateFn, ArrowReaderOptions},
+        AsyncArrowWriter,
     },
     basic::Compression,
     file::properties::{EnabledStatistics, WriterProperties},
     format::SortingColumn,
     schema::types::ColumnPath,
 };
-use rand::{Rng, thread_rng};
+use rand::{thread_rng, Rng};
 
 fn get_ordered_record_batch(record_size: usize) -> RecordBatch {
     let mut ids = vec![];
@@ -63,9 +63,9 @@ fn get_random_record_batch(record_size: usize) -> RecordBatch {
 async fn prepare_test_file(record_size: usize, sorted: bool) -> Path {
     let dir = "./bench_data";
     let filename = format!(
-        "bench_{}_{}.parquet",
+        "bench_{}_{}M.parquet",
         sorted.then_some("sorted").unwrap_or("random"),
-        record_size
+        record_size / 1048576
     );
 
     if !std::path::Path::new(dir).exists() {
@@ -199,38 +199,33 @@ async fn bench_pushdown_reader(path: &Path, range: (u64, u64), options: ArrowRea
     while let Some(_) = reader.next().await {}
 }
 
-fn bench_compare_readers(c: &mut Criterion, group_name: &str, sorted: bool, with_page_index: bool) {
+fn bench_compare_readers(c: &mut Criterion, group_name: &str, sorted: bool, size: usize) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
-    let sizes = vec![
-        1024 * 1024,
-        4 * 1024 * 1024,
-        8 * 1024 * 1024,
-        16 * 1024 * 1024,
-    ];
     let mut group = c.benchmark_group(group_name);
-    for size in sizes {
-        let path = rt.block_on(prepare_test_file(size, sorted));
+    let path = rt.block_on(prepare_test_file(size, sorted));
 
-        group.bench_with_input(
-            BenchmarkId::new("parquet_reader", size),
-            &size,
-            |b, &size| {
-                b.to_async(&rt).iter(|| async {
-                    let mut rng = thread_rng();
-                    let left = rng.gen_range(0..size);
-                    let right = rng.gen_range(left..size);
-                    bench_standard_reader(
-                        &path,
-                        (left as u64, right as u64),
-                        ArrowReaderOptions::new().with_page_index(with_page_index),
-                    )
-                    .await
-                });
-            },
-        );
-
-        group.bench_with_input(BenchmarkId::new("aisle_reader", size), &size, |b, &size| {
+    group.bench_with_input(
+        BenchmarkId::new("parquet_no_index", size),
+        &size,
+        |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let mut rng = thread_rng();
+                let left = rng.gen_range(0..size);
+                let right = rng.gen_range(left..size);
+                bench_standard_reader(
+                    &path,
+                    (left as u64, right as u64),
+                    ArrowReaderOptions::new().with_page_index(false),
+                )
+                .await
+            });
+        },
+    );
+    group.bench_with_input(
+        BenchmarkId::new("aisle_no_index", size),
+        &size,
+        |b, &size| {
             b.to_async(&rt).iter(|| async {
                 let mut rng = thread_rng();
                 let left = rng.gen_range(0..size);
@@ -238,36 +233,75 @@ fn bench_compare_readers(c: &mut Criterion, group_name: &str, sorted: bool, with
                 bench_pushdown_reader(
                     &path,
                     (left as u64, right as u64),
-                    ArrowReaderOptions::new().with_page_index(with_page_index),
+                    ArrowReaderOptions::new().with_page_index(false),
                 )
                 .await
             });
-        });
-    }
+        },
+    );
+    group.bench_with_input(
+        BenchmarkId::new("parquet_with_index", size),
+        &size,
+        |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let mut rng = thread_rng();
+                let left = rng.gen_range(0..size);
+                let right = rng.gen_range(left..size);
+                bench_standard_reader(
+                    &path,
+                    (left as u64, right as u64),
+                    ArrowReaderOptions::new().with_page_index(true),
+                )
+                .await
+            });
+        },
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("aisle_with_index", size),
+        &size,
+        |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let mut rng = thread_rng();
+                let left = rng.gen_range(0..size);
+                let right = rng.gen_range(left..size);
+                bench_pushdown_reader(
+                    &path,
+                    (left as u64, right as u64),
+                    ArrowReaderOptions::new().with_page_index(true),
+                )
+                .await
+            });
+        },
+    );
     group.finish();
 }
 
-fn compare_readers_sorted_without_page_index(c: &mut Criterion) {
-    bench_compare_readers(c, "sorted_without_page_index", true, false);
+fn compare_readers_ordered(c: &mut Criterion) {
+    let sizes = vec![
+        1024 * 1024,
+        2 * 1024 * 1024,
+        4 * 1024 * 1024,
+        8 * 1024 * 1024,
+        16 * 1024 * 1024,
+    ];
+    for size in sizes {
+        bench_compare_readers(c, &format!("ordered_{}M", size / 1048576), true, size);
+    }
 }
 
-fn compare_readers_sorted_with_page_index(c: &mut Criterion) {
-    bench_compare_readers(c, "sorted_with_page_index", true, true);
+fn compare_readers_unordered(c: &mut Criterion) {
+    let sizes = vec![
+        1024 * 1024,
+        2 * 1024 * 1024,
+        4 * 1024 * 1024,
+        8 * 1024 * 1024,
+        16 * 1024 * 1024,
+    ];
+    for size in sizes {
+        bench_compare_readers(c, &format!("random_{}M", size / 1048576), false, size);
+    }
 }
 
-fn compare_readers_random_without_page_index(c: &mut Criterion) {
-    bench_compare_readers(c, "random_without_page_index", false, false);
-}
-
-fn compare_readers_random_with_page_index(c: &mut Criterion) {
-    bench_compare_readers(c, "random_with_page_index", false, true);
-}
-
-criterion_group!(
-    benches,
-    compare_readers_sorted_without_page_index,
-    compare_readers_random_without_page_index,
-    compare_readers_sorted_with_page_index,
-    compare_readers_random_with_page_index,
-);
+criterion_group!(benches, compare_readers_ordered, compare_readers_unordered,);
 criterion_main!(benches);
