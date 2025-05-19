@@ -20,7 +20,20 @@ Aisle provides the most benefit in the following scenarios:
 
 ## Performance Benchmark
 
-Performance comparison with ordered data (time in milliseconds):
+Performance comparison reading one page with ordered data (time in milliseconds):
+
+|num records(file size)|      Parquet      |    Aisle    |Parquet + Page index |  Aisle + Page index |
+| --- | --- | --- | --- | --- |
+|   1M(10M)       |         7.3603    |      7.1544 |	      6.3529	    |	      1.8824	  |
+|    2M(20M)      |        12.5684    |      7.2895 |	     11.1947	    |	      1.8947	  |
+|    4M(40M)      |        23.4870    |      7.3679 |	     21.3731	    |	      1.9326	  |
+|    8M(80M)      |        44.4000    |      7.4000 |	     40.9667	    |	      1.9583	  |
+|   16M(160M)     |        87.5431    |      7.3756 |	     81.1878	    |	      2.1218	  |
+|   32M(325M)     |       174.5357    |      7.4286 |	    163.7143	    |	      2.3571	  |
+|    64M(649M)    |       366.3396    |      8.1887 |	    343.8302	    |	      3.1415	  |
+|   128M(1.3G)    |       708.3163    |      7.8316 |	    651.8163	    |	      4.1429	  |
+
+Performance comparison with ordered data on average (time in milliseconds):
 
 |num records(file size)|      Parquet      |    Aisle    |Parquet + Page index |  Aisle + Page index |
 | --- | --- | --- | --- | --- |
@@ -29,10 +42,10 @@ Performance comparison with ordered data (time in milliseconds):
 |     4M(40M)    |        35.8168    |     26.0524 |	     33.5340	    |	     20.6283	  |
 |     8M(80M)    |        70.7043    |     45.9785 |	     66.0591	    |	     39.6452	  |
 |    16M(160M)    |       134.5108    |     80.9409 |	    126.7634	    |	     73.2258	  |
-|    32M(235M)    |       274.5309    |    164.4259 |	    255.6728	    |	    152.6481	  |
+|    32M(325M)    |       274.5309    |    164.4259 |	    255.6728	    |	    152.6481	  |
 
 
-Performance comparison with totally random data (time in milliseconds):
+Performance comparison with totally random data on average (time in milliseconds):
 |num records(file size)|      Parquet      |    Aisle    |Parquet + Page index |  Aisle + Page index |
 | --- | --- | --- | --- | --- |
 |     1M(14M)    |        39.0727    |     39.0636 |	     38.7909	    |	     40.2455	  |
@@ -42,14 +55,14 @@ Performance comparison with totally random data (time in milliseconds):
 |    16M(256M)    |       682.9139    |    679.8742 |	    679.1854	    |	    699.1987	  |
 |    32M(532M)    |      1310.9390    |   1300.8780 |	   1305.4085	    |	   1319.1280	  |
 
-See benchmark for more [details](./benches/read_bench)
+See benchmark for more [details](./benches/read_bench.rs).
 
-So it is recommended to use Aisle on sorted or partially sorted data.
+See more benchmark results [here](./docs/benchmark.md)
 
 ## Installation
 
 ### Requirements
-- Rust 
+- Rust
 - parquet 55.1.0 or later
 
 Add Aisle to your `Cargo.toml`:
@@ -203,4 +216,3 @@ We welcome contributions! Areas of particular interest:
 - Test cases and benchmarks
 
 Please feel free to open issues or submit pull requests on GitHub.
-
