@@ -20,40 +20,32 @@ Aisle provides the most benefit in the following scenarios:
 
 ## Performance Benchmark
 
-Performance comparison reading one page with ordered data (time in milliseconds):
+Performance comparison on equivalent query  with ordered data (time in milliseconds):
 
 |num records(file size)|      Parquet      |    Aisle    |Parquet + Page index |  Aisle + Page index |
 | --- | --- | --- | --- | --- |
-|   1M(10M)       |         7.3603    |      7.1544 |	      6.3529	    |	      1.8824	  |
-|    2M(20M)      |        12.5684    |      7.2895 |	     11.1947	    |	      1.8947	  |
-|    4M(40M)      |        23.4870    |      7.3679 |	     21.3731	    |	      1.9326	  |
-|    8M(80M)      |        44.4000    |      7.4000 |	     40.9667	    |	      1.9583	  |
-|   16M(160M)     |        87.5431    |      7.3756 |	     81.1878	    |	      2.1218	  |
-|   32M(325M)     |       174.5357    |      7.4286 |	    163.7143	    |	      2.3571	  |
-|    64M(649M)    |       366.3396    |      8.1887 |	    343.8302	    |	      3.1415	  |
-|   128M(1.3G)    |       708.3163    |      7.8316 |	    651.8163	    |	      4.1429	  |
+|   1M(10M)       |         5.7486    |      5.4973 |	      5.1803	    |	      0.8361	  |
+|    2M(20M)      |        11.2995    |      5.9036 |	     10.4619	    |	      0.9492	  |
+|    4M(40M)      |        22.4779    |      6.0074 |	     20.5882	    |	      0.9926	  |
+|    8M(80M)      |        45.2373    |      5.9407 |	     41.6102	    |	      1.1186	  |
+|   16M(160M)     |        86.2993    |      6.0680 |	     80.1837	    |	      1.1701	  |
+|   32M(325M)     |       181.5905    |      6.0286 |	    168.7143	    |	      1.4381	  |
+|    64M(649M)    |       340.8466    |      5.6705 |	    319.2045	    |	      1.7898	  |
+|   128M(1.3G)    |       652.1447    |      5.5786 |	    611.5472	    |	      2.7170	  |
 
-Performance comparison with ordered data on average (time in milliseconds):
+Performance comparison on range scans with ordered data (time in milliseconds):
 
 |num records(file size)|      Parquet      |    Aisle    |Parquet + Page index |  Aisle + Page index |
 | --- | --- | --- | --- | --- |
-|    1M(10M)   |        10.1944    |      9.9352 |	      9.1019	    |	      6.2315	  |
-|     2M(20M)    |        19.0694    |     15.7283 |	     17.5780	    |	     11.1676	  |
-|     4M(40M)    |        35.8168    |     26.0524 |	     33.5340	    |	     20.6283	  |
-|     8M(80M)    |        70.7043    |     45.9785 |	     66.0591	    |	     39.6452	  |
-|    16M(160M)    |       134.5108    |     80.9409 |	    126.7634	    |	     73.2258	  |
-|    32M(325M)    |       274.5309    |    164.4259 |	    255.6728	    |	    152.6481	  |
+|   1M(10M)       |         6.7037    |      6.4074 |	      6.0093	    |	      3.1389	  |
+|    2M(20M)      |        13.5426    |     10.3298 |	     12.7447	    |	      6.2394	  |
+|    4M(40M)      |        26.5282    |     16.7606 |	     24.7887	    |	     11.7465	  |
+|    8M(80M)      |        48.1467    |     23.2133 |	     45.1333	    |	     18.1333	  |
+|   16M(160M)     |       101.0506    |     51.2247 |	     94.8315	    |	     44.3764	  |
+|   32M(325M)     |       214.3759    |     96.8014 |	    192.1418	    |	     80.7376	  |
+|    64M(649M)    |       375.0408    |    164.0255 |	    351.4541	    |	    151.2296	  |
+|   128M(1.3G)    |       740.0068    |    307.3197 |	    691.7279	    |	    287.6667	  |
 
-
-Performance comparison with totally random data on average (time in milliseconds):
-|num records(file size)|      Parquet      |    Aisle    |Parquet + Page index |  Aisle + Page index |
-| --- | --- | --- | --- | --- |
-|     1M(14M)    |        39.0727    |     39.0636 |	     38.7909	    |	     40.2455	  |
-|     2M(30M)    |        80.3776    |     80.0867 |	     80.1276	    |	     82.6786	  |
-|     4M(60M)    |       163.0556    |    162.6429 |	    163.3651	    |	    167.3413	  |
-|     8M(125M)    |       315.1676    |    315.2757 |	    316.2162	    |	    324.1622	  |
-|    16M(256M)    |       682.9139    |    679.8742 |	    679.1854	    |	    699.1987	  |
-|    32M(532M)    |      1310.9390    |   1300.8780 |	   1305.4085	    |	   1319.1280	  |
 
 See benchmark for more [details](./benches/read_bench.rs).
 
@@ -206,13 +198,3 @@ Run benchmark:
 ```bash
 cargo bench --bench read_bench --features tokio
 ```
-
-## Contributing
-
-We welcome contributions! Areas of particular interest:
-- Additional predicate types
-- Performance optimizations
-- Documentation improvements
-- Test cases and benchmarks
-
-Please feel free to open issues or submit pull requests on GitHub.
