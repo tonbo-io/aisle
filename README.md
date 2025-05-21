@@ -18,34 +18,13 @@ Aisle provides the most benefit in the following scenarios:
 1. **Selective Queries**: The more selective your predicates, the greater the benefit from page-level filtering.
 2. **Sorted or Partially Sorted Data**: When data are generally ordered across row groups or pages, Aisle will become more effective
 
+If your columns are totally random values(e.g. identifiers or uuids), we recommend to disable page index in `ArrowReaderOptions`
+
 ## Performance Benchmark
 
-Performance comparison on equivalent query  with ordered data (time in milliseconds):
+![Equivalent Query](./docs/images/equivalent_query_ordered.png)
 
-|num records(file size)|      Parquet      |    Aisle    |Parquet + Page index |  Aisle + Page index |
-| --- | --- | --- | --- | --- |
-|   1M(10M)       |         5.7486    |      5.4973 |	      5.1803	    |	      0.8361	  |
-|    2M(20M)      |        11.2995    |      5.9036 |	     10.4619	    |	      0.9492	  |
-|    4M(40M)      |        22.4779    |      6.0074 |	     20.5882	    |	      0.9926	  |
-|    8M(80M)      |        45.2373    |      5.9407 |	     41.6102	    |	      1.1186	  |
-|   16M(160M)     |        86.2993    |      6.0680 |	     80.1837	    |	      1.1701	  |
-|   32M(325M)     |       181.5905    |      6.0286 |	    168.7143	    |	      1.4381	  |
-|    64M(649M)    |       340.8466    |      5.6705 |	    319.2045	    |	      1.7898	  |
-|   128M(1.3G)    |       652.1447    |      5.5786 |	    611.5472	    |	      2.7170	  |
-
-Performance comparison on range scans with ordered data (time in milliseconds):
-
-|num records(file size)|      Parquet      |    Aisle    |Parquet + Page index |  Aisle + Page index |
-| --- | --- | --- | --- | --- |
-|   1M(10M)       |         6.7037    |      6.4074 |	      6.0093	    |	      3.1389	  |
-|    2M(20M)      |        13.5426    |     10.3298 |	     12.7447	    |	      6.2394	  |
-|    4M(40M)      |        26.5282    |     16.7606 |	     24.7887	    |	     11.7465	  |
-|    8M(80M)      |        48.1467    |     23.2133 |	     45.1333	    |	     18.1333	  |
-|   16M(160M)     |       101.0506    |     51.2247 |	     94.8315	    |	     44.3764	  |
-|   32M(325M)     |       214.3759    |     96.8014 |	    192.1418	    |	     80.7376	  |
-|    64M(649M)    |       375.0408    |    164.0255 |	    351.4541	    |	    151.2296	  |
-|   128M(1.3G)    |       740.0068    |    307.3197 |	    691.7279	    |	    287.6667	  |
-
+![Range Query](./docs/images/range_query_ordered.png)
 
 See benchmark for more [details](./benches/read_bench.rs).
 
