@@ -5,6 +5,24 @@ edition = "2024"
 description = "An efficient Parquet file reader."
 license = "Apache-2.0"
 
+[features]
+default = []
+tokio = ["dep:tokio"]
+
+[[example]]
+name = "reader"
+required-features = ["tokio"]
+
+[[bench]]
+harness = false
+name = "reader"
+required-features = ["tokio"]
+
+[[bench]]
+harness = false
+name = "read_bench"
+required-features = ["tokio"]
+
 [dependencies]
 arrow = { version = "55.1.0", default-features = false }
 arrow-schema = { version = "55.1.0", default-features = false }
@@ -13,6 +31,7 @@ parquet = { version = "55.1.0", default-features = false, features = [
     "arrow",
     "async",
 ] }
+tokio = { version = "1.44.2", optional = true, features = ["full"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }
