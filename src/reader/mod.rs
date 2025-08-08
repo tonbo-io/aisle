@@ -330,13 +330,17 @@ mod tests {
         writer_properties: WriterProperties,
         record_size: usize,
     ) {
-        let parquet_path = format!("{}/{}", dir, filename);
+        let mut dir_path = std::path::PathBuf::from(dir);
+        if dir_path.is_relative() {
+            dir_path = std::env::current_dir().unwrap().join(dir_path);
+        }
+        let parquet_path = dir_path.join(filename);
 
-        if !std::path::Path::new(&parquet_path).exists() {
-            if !std::path::Path::new(dir).exists() {
-                std::fs::create_dir_all(dir).unwrap();
+        if !parquet_path.exists() {
+            if !dir_path.exists() {
+                std::fs::create_dir_all(&dir_path).unwrap();
             }
-            let path = Path::new(dir).unwrap().child(filename);
+            let path = Path::from_filesystem_path(&parquet_path).unwrap();
             load_data(path, writer_properties, record_size).await;
         }
     }
@@ -431,10 +435,11 @@ mod tests {
         let properties = writer_properties(Some(vec!["id".into()]), Some(vec![0]));
 
         let filename = "data.parquet";
-        let dir = "./data";
-        try_load_data(dir, filename, properties, 8 * 1024 * 1024).await;
+        let dir = format!("{}/data", std::env::current_dir().unwrap().display());
+        try_load_data(&dir, filename, properties, 8 * 1024 * 1024).await;
 
-        let parquet_file_path = Path::new(dir).unwrap().child(filename);
+        let parquet_file_path =
+            Path::from_filesystem_path(std::path::Path::new(&dir).join(filename)).unwrap();
 
         let metadata = get_parquet_metadata(&parquet_file_path).await.unwrap();
         let parquet_schema = metadata.file_metadata().schema_descr();
@@ -492,7 +497,8 @@ mod tests {
     ) {
         try_load_data(dir, filename, writer_properties, record_size).await;
 
-        let parquet_file_path = Path::new(dir).unwrap().child(filename);
+        let parquet_file_path =
+            Path::from_filesystem_path(std::path::Path::new(dir).join(filename)).unwrap();
 
         let fs = TokioFs {};
         let file = fs
@@ -620,13 +626,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_read_parquet_scan_cross_page_ordered() {
         let properties = writer_properties(Some(vec!["id".to_string()]), Some(vec![0]));
-        read_parquet_scan_cross_page(properties, 8 * 1024 * 1024, "./data", "data.parquet").await;
+        let dir = format!("{}/data", std::env::current_dir().unwrap().display());
+        read_parquet_scan_cross_page(properties, 8 * 1024 * 1024, &dir, "data.parquet").await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_read_parquet_scan_cross_page_unordered() {
         let properties = writer_properties(None, None);
-        read_parquet_scan_cross_page(properties, 8 * 1024 * 1024, "./data", "random.parquet").await;
+        let dir = format!("{}/data", std::env::current_dir().unwrap().display());
+        read_parquet_scan_cross_page(properties, 8 * 1024 * 1024, &dir, "random.parquet").await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -634,10 +642,11 @@ mod tests {
         let properties = writer_properties(Some(vec!["id".into()]), Some(vec![0]));
 
         let filename = "data.parquet";
-        let dir = "./data";
-        try_load_data(dir, filename, properties, 8 * 1024 * 1024).await;
+        let dir = format!("{}/data", std::env::current_dir().unwrap().display());
+        try_load_data(&dir, filename, properties, 8 * 1024 * 1024).await;
 
-        let parquet_file_path = Path::new(dir).unwrap().child(filename);
+        let parquet_file_path =
+            Path::from_filesystem_path(std::path::Path::new(&dir).join(filename)).unwrap();
 
         let metadata = get_parquet_metadata(&parquet_file_path).await.unwrap();
         let parquet_schema = metadata.file_metadata().schema_descr();
@@ -694,11 +703,12 @@ mod tests {
         let properties = writer_properties(Some(vec!["id".to_string()]), Some(vec![0]));
 
         let filename = "data.parquet";
-        let dir = "./data";
+        let dir = format!("{}/data", std::env::current_dir().unwrap().display());
         let record_num = 8 * 1024 * 1024;
-        try_load_data(dir, filename, properties, record_num).await;
+        try_load_data(&dir, filename, properties, record_num).await;
 
-        let parquet_file_path = Path::new(dir).unwrap().child(filename);
+        let parquet_file_path =
+            Path::from_filesystem_path(std::path::Path::new(&dir).join(filename)).unwrap();
 
         let metadata = get_parquet_metadata(&parquet_file_path).await.unwrap();
         let parquet_schema = metadata.file_metadata().schema_descr();
