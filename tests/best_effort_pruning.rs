@@ -226,8 +226,7 @@ fn test_not_page_selection_inverts_exact_with_multi_pages() {
     let inner_sel = inner_result
         .row_selection()
         .expect("inner selection should be available");
-    let inner_selectors: Vec<parquet::arrow::arrow_reader::RowSelector> =
-        inner_sel.clone().into();
+    let inner_selectors: Vec<parquet::arrow::arrow_reader::RowSelector> = inner_sel.clone().into();
     assert!(
         inner_selectors.iter().any(|sel| sel.skip),
         "inner selection should include skips"
@@ -359,10 +358,7 @@ fn test_not_of_and() {
     let metadata = load_metadata(&bytes);
 
     // NOT((a > 50) AND (b > 90))
-    let expr = col("a")
-        .gt(lit(50i32))
-        .and(col("b").gt(lit(90i32)))
-        .not();
+    let expr = col("a").gt(lit(50i32)).and(col("b").gt(lit(90i32))).not();
 
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
@@ -401,10 +397,7 @@ fn test_not_of_or() {
     let metadata = load_metadata(&bytes);
 
     // NOT((a > 50) OR (b > 90))
-    let expr = col("a")
-        .gt(lit(50i32))
-        .or(col("b").gt(lit(90i32)))
-        .not();
+    let expr = col("a").gt(lit(50i32)).or(col("b").gt(lit(90i32))).not();
 
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
@@ -480,8 +473,7 @@ fn test_not_with_all_select_inner() {
 
     // Inner should select all (or at least have no skips if it produces a selection)
     let inner_has_skip = inner_result.row_selection().map(|selection| {
-        let selectors: Vec<parquet::arrow::arrow_reader::RowSelector> =
-            selection.clone().into();
+        let selectors: Vec<parquet::arrow::arrow_reader::RowSelector> = selection.clone().into();
         selectors.iter().any(|sel| sel.skip)
     });
 
@@ -592,8 +584,7 @@ fn test_not_inverts_skip_select_correctly() {
     assert!(inner_result.row_selection().is_some());
 
     let inner_has_skip = inner_result.row_selection().map(|selection| {
-        let selectors: Vec<parquet::arrow::arrow_reader::RowSelector> =
-            selection.clone().into();
+        let selectors: Vec<parquet::arrow::arrow_reader::RowSelector> = selection.clone().into();
         selectors.iter().any(|sel| sel.skip)
     });
 

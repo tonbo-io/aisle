@@ -4,7 +4,7 @@ use aisle::{PruneRequest, PruneResult};
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use datafusion_expr::{cast, col, lit, try_cast, Expr};
+use datafusion_expr::{Expr, cast, col, lit, try_cast};
 use parquet::{
     arrow::ArrowWriter,
     file::{
@@ -42,7 +42,11 @@ fn load_metadata(bytes: &[u8]) -> ParquetMetaData {
         .unwrap()
 }
 
-fn prune_with_test_options(metadata: &ParquetMetaData, schema: &Schema, expr: &Expr) -> PruneResult {
+fn prune_with_test_options(
+    metadata: &ParquetMetaData,
+    schema: &Schema,
+    expr: &Expr,
+) -> PruneResult {
     PruneRequest::new(metadata, schema)
         .with_predicate(expr)
         .enable_page_index(false)
@@ -186,8 +190,10 @@ fn cast_in_between() {
     let metadata = load_metadata(&bytes);
 
     // CAST in BETWEEN: column is no-op, literals are cast
-    let expr = cast(col("id"), DataType::Int64)
-        .between(cast(lit(40i32), DataType::Int64), cast(lit(70i32), DataType::Int64));
+    let expr = cast(col("id"), DataType::Int64).between(
+        cast(lit(40i32), DataType::Int64),
+        cast(lit(70i32), DataType::Int64),
+    );
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
 

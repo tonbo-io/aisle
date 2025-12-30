@@ -1,6 +1,9 @@
 use arrow_schema::{DataType, Schema};
 use datafusion_common::ScalarValue;
-use parquet::file::statistics::Statistics;
+use parquet::{
+    basic::{ColumnOrder, SortOrder},
+    file::statistics::Statistics,
+};
 
 use super::context::RowGroupContext;
 
@@ -12,10 +15,40 @@ pub(super) fn stats_for_column(
     let col_idx = *ctx.column_lookup.get(column)?;
     let data_type = data_type_for_path(ctx.schema, column)?;
     let stats = row_group.column(col_idx).statistics()?;
+    if !byte_array_ordering_supported(stats, ctx, col_idx) {
+        return None;
+    }
     let (min, max) = stats_to_scalars(stats, &data_type)?;
     let null_count = stats.null_count_opt();
     let row_count = row_group.num_rows() as u64;
     Some((min, max, null_count, row_count))
+}
+
+pub(super) fn byte_array_ordering_supported(
+    stats: &Statistics,
+    ctx: &RowGroupContext<'_>,
+    col_idx: usize,
+) -> bool {
+    if !matches!(
+        stats,
+        Statistics::ByteArray(_) | Statistics::FixedLenByteArray(_)
+    ) {
+        return true;
+    }
+
+    let column_order = ctx.metadata.file_metadata().column_order(col_idx);
+    if !matches!(
+        column_order,
+        ColumnOrder::TYPE_DEFINED_ORDER(SortOrder::UNSIGNED)
+    ) {
+        return false;
+    }
+
+    if ctx.options.allow_truncated_byte_array_ordering() {
+        return true;
+    }
+
+    stats.min_is_exact() && stats.max_is_exact()
 }
 
 fn stats_to_scalars(

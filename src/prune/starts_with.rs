@@ -1,14 +1,7 @@
+use super::{cmp, context::RowGroupContext, page::PagePruning, stats, strings};
 use crate::ir::{CmpOp, TriState};
 
-use super::context::RowGroupContext;
-use super::{cmp, stats, strings};
-use super::page::PagePruning;
-
-pub(super) fn eval_starts_with(
-    column: &str,
-    prefix: &str,
-    ctx: &RowGroupContext<'_>,
-) -> TriState {
+pub(super) fn eval_starts_with(column: &str, prefix: &str, ctx: &RowGroupContext<'_>) -> TriState {
     if prefix.is_empty() {
         return TriState::Unknown;
     }

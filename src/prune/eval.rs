@@ -12,11 +12,9 @@
 
 use parquet::arrow::arrow_reader::RowSelection;
 
-use crate::ir::{IrExpr, TriState};
-
 pub(in crate::prune) use super::context::RowGroupContext;
-use super::{bloom, between, cmp, in_list, is_null, page, starts_with};
-use super::page::PagePruning;
+use super::{between, bloom, cmp, in_list, is_null, page, page::PagePruning, starts_with};
+use crate::ir::{IrExpr, TriState};
 
 pub(super) fn eval_conjunction(predicates: &[IrExpr], ctx: &RowGroupContext<'_>) -> TriState {
     let mut result = TriState::True;

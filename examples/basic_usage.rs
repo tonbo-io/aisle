@@ -4,7 +4,6 @@
 /// 1. Prune row groups using metadata and predicates
 /// 2. Apply pruning results to a Parquet reader
 /// 3. Measure I/O reduction from pruning
-
 use aisle::PruneRequest;
 use datafusion_expr::{col, lit};
 
@@ -30,13 +29,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use Aisle to determine which row groups to read
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&predicate)
-        .enable_page_index(false)    // Row-group level only
-        .enable_bloom_filter(false)  // No bloom filters
+        .enable_page_index(false) // Row-group level only
+        .enable_bloom_filter(false) // No bloom filters
         .prune();
 
     println!("Pruning result:");
     println!("  ✓ Kept row groups: {:?}", result.row_groups());
-    println!("  ✗ Pruned: {} of 3 row groups ({}% I/O reduction)\n",
+    println!(
+        "  ✗ Pruned: {} of 3 row groups ({}% I/O reduction)\n",
         3 - result.row_groups().len(),
         ((3 - result.row_groups().len()) as f64 / 3.0 * 100.0) as i32
     );
@@ -49,9 +49,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rows_with_pruning = helpers::read_with_pruning(&parquet_bytes, &result)?;
 
     println!("Performance:");
-    println!("  Without pruning: {} rows from 3 row groups", rows_without_pruning);
-    println!("  With pruning:    {} rows from {} row group(s)",
-        rows_with_pruning, result.row_groups().len());
+    println!(
+        "  Without pruning: {} rows from 3 row groups",
+        rows_without_pruning
+    );
+    println!(
+        "  With pruning:    {} rows from {} row group(s)",
+        rows_with_pruning,
+        result.row_groups().len()
+    );
     println!("\n=== Example Complete ===");
 
     Ok(())
@@ -63,17 +69,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 mod helpers {
     use std::sync::Arc;
+
+    use aisle::PruneResult;
     use arrow_array::{Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use bytes::Bytes;
     use parquet::{
-        arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ArrowWriter},
+        arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
         file::{
             metadata::{ParquetMetaData, ParquetMetaDataReader},
             properties::{EnabledStatistics, WriterProperties},
         },
     };
-    use aisle::PruneResult;
 
     pub fn create_sample_parquet() -> Result<(Bytes, Arc<Schema>), Box<dyn std::error::Error>> {
         let schema = Arc::new(Schema::new(vec![
@@ -83,9 +90,24 @@ mod helpers {
         ]));
 
         let batches = vec![
-            create_batch(schema.clone(), &[1, 2, 3], &["Alice", "Bob", "Carol"], &[25, 30, 35]),
-            create_batch(schema.clone(), &[100, 101, 102], &["Dave", "Eve", "Frank"], &[40, 45, 50]),
-            create_batch(schema.clone(), &[200, 201, 202], &["Grace", "Henry", "Iris"], &[55, 60, 65]),
+            create_batch(
+                schema.clone(),
+                &[1, 2, 3],
+                &["Alice", "Bob", "Carol"],
+                &[25, 30, 35],
+            ),
+            create_batch(
+                schema.clone(),
+                &[100, 101, 102],
+                &["Dave", "Eve", "Frank"],
+                &[40, 45, 50],
+            ),
+            create_batch(
+                schema.clone(),
+                &[200, 201, 202],
+                &["Grace", "Henry", "Iris"],
+                &[55, 60, 65],
+            ),
         ];
 
         let mut buffer = Vec::new();
@@ -131,12 +153,7 @@ mod helpers {
         Ok(total)
     }
 
-    fn create_batch(
-        schema: Arc<Schema>,
-        ids: &[i64],
-        names: &[&str],
-        ages: &[i64],
-    ) -> RecordBatch {
+    fn create_batch(schema: Arc<Schema>, ids: &[i64], names: &[&str], ages: &[i64]) -> RecordBatch {
         RecordBatch::try_new(
             schema,
             vec![

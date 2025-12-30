@@ -24,9 +24,9 @@
 //!
 //! ```text
 //! Predicate: a > 50
-//! Page 0: min=1,  max=10   → TriState::False  (all < 50, skip)
-//! Page 1: min=45, max=55   → TriState::Unknown (might contain > 50, keep)
-//! Page 2: min=60, max=70   → TriState::True   (all > 50, keep)
+//! Page 0: min=1,  max=10   -> TriState::False  (all < 50, skip)
+//! Page 1: min=45, max=55   -> TriState::Unknown (might contain > 50, keep)
+//! Page 2: min=60, max=70   -> TriState::True   (all > 50, keep)
 //!
 //! Result: exact = false (Page 1 is Unknown)
 //! NOT inversion: Rejected (would incorrectly skip Page 1's >50 values)

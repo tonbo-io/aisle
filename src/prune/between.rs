@@ -1,9 +1,7 @@
 use datafusion_common::ScalarValue;
-use crate::ir::{CmpOp, TriState};
 
-use super::context::RowGroupContext;
-use super::cmp;
-use super::page::PagePruning;
+use super::{cmp, context::RowGroupContext, page::PagePruning};
+use crate::ir::{CmpOp, TriState};
 
 pub(super) fn eval_between(
     column: &str,

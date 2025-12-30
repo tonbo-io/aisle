@@ -21,19 +21,20 @@
 //! # Quick Start
 //!
 //! ```rust,no_run
+//! use std::sync::Arc;
+//!
 //! use aisle::PruneRequest;
-//! use datafusion_expr::{col, lit};
-//! use parquet::file::metadata::ParquetMetaDataReader;
-//! use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 //! use arrow_schema::{DataType, Field, Schema};
 //! use bytes::Bytes;
-//! use std::sync::Arc;
+//! use datafusion_expr::{col, lit};
+//! use parquet::{
+//!     arrow::arrow_reader::ParquetRecordBatchReaderBuilder, file::metadata::ParquetMetaDataReader,
+//! };
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! # let parquet_bytes = Bytes::new();
 //! // 1. Load metadata (without reading data)
-//! let metadata = ParquetMetaDataReader::new()
-//!     .parse_and_finish(&parquet_bytes)?;
+//! let metadata = ParquetMetaDataReader::new().parse_and_finish(&parquet_bytes)?;
 //!
 //! // 2. Define schema and filter predicate
 //! let schema = Arc::new(Schema::new(vec![
@@ -41,23 +42,26 @@
 //!     Field::new("age", DataType::Int64, false),
 //! ]));
 //!
-//! let predicate = col("user_id").gt_eq(lit(1000i64))
+//! let predicate = col("user_id")
+//!     .gt_eq(lit(1000i64))
 //!     .and(col("age").lt(lit(30i64)));
 //!
 //! // 3. Prune row groups using metadata
 //! let result = PruneRequest::new(&metadata, &schema)
 //!     .with_predicate(&predicate)
-//!     .enable_page_index(false)     // Row-group level only
-//!     .enable_bloom_filter(false)   // No bloom filters
+//!     .enable_page_index(false) // Row-group level only
+//!     .enable_bloom_filter(false) // No bloom filters
 //!     .prune();
 //!
-//! println!("Kept {} of {} row groups",
+//! println!(
+//!     "Kept {} of {} row groups",
 //!     result.row_groups().len(),
-//!     metadata.num_row_groups());
+//!     metadata.num_row_groups()
+//! );
 //!
 //! // 4. Apply pruning to Parquet reader
 //! let reader = ParquetRecordBatchReaderBuilder::try_new(parquet_bytes.clone())?
-//!     .with_row_groups(result.row_groups().to_vec())  // Skip irrelevant row groups!
+//!     .with_row_groups(result.row_groups().to_vec()) // Skip irrelevant row groups!
 //!     .build()?;
 //!
 //! // Read only the relevant data (70-99% I/O reduction!)
@@ -71,14 +75,14 @@
 //!
 //! # Key Features
 //!
-//! - **Row-group pruning** — Skip entire row groups using min/max statistics
-//! - **Page-level pruning** — Skip individual pages within row groups
-//! - **Bloom filter support** — Definite absence checks for point queries (`=`, `IN`)
-//! - **DataFusion expressions** — Use familiar `col("x").eq(lit(42))` syntax
-//! - **Conservative evaluation** — Never skips data that might match (safety first)
-//! - **Async-first API** — Optimized for remote storage (S3, GCS, Azure)
-//! - **Non-invasive** — Works with upstream `parquet` crate, no format changes
-//! - **Best-effort compilation** — Uses supported predicates even if some fail
+//! - **Row-group pruning**: Skip entire row groups using min/max statistics
+//! - **Page-level pruning**: Skip individual pages within row groups
+//! - **Bloom filter support**: Definite absence checks for point queries (`=`, `IN`)
+//! - **DataFusion expressions**: Use familiar `col("x").eq(lit(42))` syntax
+//! - **Conservative evaluation**: Never skips data that might match (safety first)
+//! - **Async-first API**: Optimized for remote storage (S3, GCS, Azure)
+//! - **Non-invasive**: Works with upstream `parquet` crate, no format changes
+//! - **Best-effort compilation**: Uses supported predicates even if some fail
 //!
 //! # Main API Entry Points
 //!
@@ -143,9 +147,7 @@
 //! }
 //!
 //! impl AsyncBloomFilterProvider for CachedBloomProvider {
-//!     async fn bloom_filter(&mut self, row_group: usize, column: usize)
-//!         -> Option<Sbbf>
-//!     {
+//!     async fn bloom_filter(&mut self, row_group: usize, column: usize) -> Option<Sbbf> {
 //!         // Load from cache or fetch from storage
 //! #       None
 //!     }
@@ -216,14 +218,20 @@
 //! // Check compilation results
 //! let compile_result = result.compile_result();
 //! if compile_result.error_count() > 0 {
-//!     eprintln!("Warning: {} unsupported predicates", compile_result.error_count());
+//!     eprintln!(
+//!         "Warning: {} unsupported predicates",
+//!         compile_result.error_count()
+//!     );
 //!     for error in compile_result.errors() {
 //!         eprintln!("  - {}", error);
 //!     }
 //! }
 //!
 //! // Still prune using supported predicates!
-//! println!("Successfully compiled {} predicates", compile_result.prunable_count());
+//! println!(
+//!     "Successfully compiled {} predicates",
+//!     compile_result.prunable_count()
+//! );
 //! # }
 //! ```
 //!
@@ -238,8 +246,8 @@
 //! | Multi-column filter | 10% | ~90% |
 //!
 //! **Performance Factors:**
-//! - Row group size (larger → better statistics granularity)
-//! - Predicate selectivity (lower → more pruning)
+//! - Row group size (larger -> better statistics granularity)
+//! - Predicate selectivity (lower -> more pruning)
 //! - Column cardinality (bloom filters help high-cardinality)
 //! - Page index availability (Parquet 1.12+)
 //!
@@ -261,8 +269,8 @@
 //! # Examples
 //!
 //! See the [repository examples](https://github.com/your-org/aisle/tree/main/examples):
-//! - `basic_usage.rs` — Row-group pruning with metadata
-//! - `async_usage.rs` — Async API with bloom filters
+//! - `basic_usage.rs`: Row-group pruning with metadata
+//! - `async_usage.rs`: Async API with bloom filters
 
 mod compile;
 mod error;

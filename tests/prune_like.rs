@@ -4,7 +4,7 @@ use aisle::PruneRequest;
 use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use datafusion_expr::{Expr, col, lit, expr::Like};
+use datafusion_expr::{Expr, col, expr::Like, lit};
 use parquet::{
     arrow::ArrowWriter,
     file::{

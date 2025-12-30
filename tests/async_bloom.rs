@@ -48,9 +48,7 @@ async fn prunes_row_groups_with_bloom_filter_eq() {
     std::fs::write(&path, &bytes).unwrap();
 
     let file = tokio::fs::File::open(&path).await.unwrap();
-    let mut builder = ParquetRecordBatchStreamBuilder::new(file)
-        .await
-        .unwrap();
+    let mut builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
 
     let expr = col("s").eq(lit("foo"));
 
@@ -61,7 +59,8 @@ async fn prunes_row_groups_with_bloom_filter_eq() {
         .enable_page_index(false)
         .enable_bloom_filter(true)
         .emit_roaring(false)
-        .prune_async(&mut builder).await;
+        .prune_async(&mut builder)
+        .await;
 
     assert_eq!(result.row_groups(), &[1]);
 

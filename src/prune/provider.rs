@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::future::Future;
+use std::{collections::HashMap, future::Future};
 
 use parquet::{
     arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder},

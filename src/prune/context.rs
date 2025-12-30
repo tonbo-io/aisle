@@ -2,9 +2,7 @@ use std::collections::HashMap;
 
 use arrow_schema::Schema;
 use parquet::{
-    bloom_filter::Sbbf,
-    file::metadata::ParquetMetaData,
-    schema::types::SchemaDescriptor,
+    bloom_filter::Sbbf, file::metadata::ParquetMetaData, schema::types::SchemaDescriptor,
 };
 
 pub(crate) struct RowGroupContext<'a> {
@@ -13,6 +11,7 @@ pub(crate) struct RowGroupContext<'a> {
     pub(crate) column_lookup: &'a HashMap<String, usize>,
     pub(crate) row_group_idx: usize,
     pub(crate) bloom_filters: Option<HashMap<usize, Sbbf>>,
+    pub(crate) options: &'a super::options::PruneOptions,
 }
 
 impl RowGroupContext<'_> {

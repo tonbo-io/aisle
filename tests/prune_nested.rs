@@ -17,8 +17,11 @@ fn make_struct_batch(schema: &Schema, values: &[i32]) -> RecordBatch {
     let child = Arc::new(Int32Array::from(values.to_vec())) as ArrayRef;
     let field = Arc::new(Field::new("b", DataType::Int32, false));
     let struct_array = StructArray::from(vec![(field, child)]);
-    RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(struct_array) as ArrayRef])
-        .unwrap()
+    RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![Arc::new(struct_array) as ArrayRef],
+    )
+    .unwrap()
 }
 
 fn write_parquet(batches: &[RecordBatch], props: WriterProperties) -> Vec<u8> {
@@ -43,11 +46,7 @@ fn load_metadata(bytes: &[u8]) -> ParquetMetaData {
 #[test]
 fn prunes_row_groups_with_nested_column() {
     let inner_fields = Fields::from(vec![Field::new("b", DataType::Int32, false)]);
-    let schema = Schema::new(vec![Field::new(
-        "a",
-        DataType::Struct(inner_fields),
-        false,
-    )]);
+    let schema = Schema::new(vec![Field::new("a", DataType::Struct(inner_fields), false)]);
     let batch1 = make_struct_batch(&schema, &[1, 2, 3, 4, 5]);
     let batch2 = make_struct_batch(&schema, &[10, 11, 12, 13, 14]);
 
@@ -71,11 +70,7 @@ fn prunes_row_groups_with_nested_column() {
 #[test]
 fn prunes_pages_with_nested_column_index() {
     let inner_fields = Fields::from(vec![Field::new("b", DataType::Int32, false)]);
-    let schema = Schema::new(vec![Field::new(
-        "a",
-        DataType::Struct(inner_fields),
-        false,
-    )]);
+    let schema = Schema::new(vec![Field::new("a", DataType::Struct(inner_fields), false)]);
     let batch = make_struct_batch(&schema, &[1, 2, 3, 4, 5, 6]);
 
     let props = WriterProperties::builder()

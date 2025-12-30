@@ -1,14 +1,13 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use aisle::{AsyncBloomFilterProvider, PruneRequest};
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use datafusion_expr::{col, lit};
-use parquet::bloom_filter::Sbbf;
 use parquet::{
     arrow::AsyncArrowWriter,
+    bloom_filter::Sbbf,
     file::{
         metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
         properties::{EnabledStatistics, WriterProperties},
@@ -42,7 +41,6 @@ fn load_metadata(bytes: &[u8]) -> ParquetMetaData {
         .parse_and_finish(&bytes)
         .unwrap()
 }
-
 
 // ============================================================================
 // Mock Bloom Filter Provider

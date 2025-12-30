@@ -1,6 +1,6 @@
 mod api;
-mod bloom;
 mod between;
+mod bloom;
 mod cmp;
 mod context;
 mod eval;
@@ -15,9 +15,8 @@ mod starts_with;
 mod stats;
 mod strings;
 
+pub(crate) use api::{prune_compiled, prune_compiled_with_bloom_provider};
 pub use options::{PruneOptions, PruneOptionsBuilder};
 pub use provider::AsyncBloomFilterProvider;
 pub use request::PruneRequest;
 pub use result::PruneResult;
-
-pub(crate) use api::{prune_compiled, prune_compiled_with_bloom_provider};

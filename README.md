@@ -14,14 +14,14 @@ Aisle evaluates DataFusion predicates against Parquet metadata (row-group statis
 
 ## Why Aisle?
 
-**The Problem:** Parquet readers typically apply filters *after* reading data, wasting I/O on irrelevant row groups and pages.
+Parquet readers typically apply filters *after* reading data, wasting I/O on irrelevant row groups and pages.
 
-**The Solution:** Aisle evaluates your predicates against metadata *before* reading:
+Aisle evaluates your predicates against metadata *before* reading:
 - **Row-group pruning** using min/max statistics
 - **Page-level pruning** using column/offset indexes
 - **Bloom filter checks** for definite absence (high-cardinality columns)
 
-**The Result:** 70-99% I/O reduction for selective queries with zero changes to the Parquet format.
+It effectively reduces I/O for selective queries with zero changes to the Parquet format.
 
 ## Quick Start
 
@@ -74,16 +74,36 @@ parquet = "57"
 arrow-schema = "57"
 ```
 
+## When to Use Aisle
+
+**Good fit:**
+- Selective queries (reading <20% of data)
+- Large Parquet files (>100MB, multiple row groups)
+- Remote storage (S3, GCS) where I/O is expensive
+- High-cardinality point queries (user IDs, transaction IDs)
+- Time-series with range queries
+
+**Not needed:**
+- Full table scans (no pruning benefit)
+- Small files (<10MB, single row group)
+- Already using a query engine with built-in pruning
+
+**Tips:** Combine Aisle with proper Parquet configuration:
+- Sort data by frequently-filtered columns
+- Use reasonable row group sizes (64-256MB)
+- Enable bloom filters for high-cardinality columns
+- Write page indexes (Parquet 1.12+)
+
 ## Key Features
 
-- **Row-group pruning** — Skip entire row groups using min/max statistics
-- **Page-level pruning** — Skip individual pages within row groups
-- **Bloom filter support** — Definite absence checks for point queries (`=`, `IN`)
-- **DataFusion expressions** — Use familiar `col("x").eq(lit(42))` syntax
-- **Conservative evaluation** — Never skips data that might match (safety first)
-- **Async-first API** — Optimized for remote storage (S3, GCS, Azure)
-- **Non-invasive** — Works with upstream `parquet` crate, no format changes
-- **Best-effort compilation** — Uses supported predicates even if some fail
+- **Row-group pruning**: Skip entire row groups using min/max statistics
+- **Page-level pruning**: Skip individual pages within row groups
+- **Bloom filter support**: Definite absence checks for point queries (`=`, `IN`)
+- **DataFusion expressions**: Use familiar `col("x").eq(lit(42))` syntax
+- **Conservative evaluation**: Never skips data that might match (safety first)
+- **Async-first API**: Optimized for remote storage (S3, GCS, Azure)
+- **Non-invasive**: Works with upstream `parquet` crate, no format changes
+- **Best-effort compilation**: Uses supported predicates even if some fail
 
 ## How It Works
 
@@ -169,11 +189,20 @@ Not yet supported (treated conservatively as "unknown"):
 
 ## Known Limitations
 
-- **Type coverage is partial**: only the leaf types listed above are supported for stats-based pruning; temporal/logical types and decimals are currently conservative.
-- **No non-trivial column casts**: only no-op column casts are allowed; literal casts happen at compile time.
+- **Type coverage is partial**: Only the leaf types listed above are supported for stats-based pruning; temporal/logical types and decimals are currently conservative.
+
+- **Byte array ordering requires column metadata**: For ordering predicates (`<`, `>`, `<=`, `>=`) on Binary/Utf8 columns:
+  - **Default (conservative)**: Requires `TYPE_DEFINED_ORDER(UNSIGNED)` column order AND exact (non-truncated) min/max statistics
+  - **Opt-in (aggressive)**: Use `.allow_truncated_byte_array_ordering(true)` to allow truncated statistics, but be aware this may cause false negatives if truncation changes ordering semantics
+  - **Equality predicates** (`=`, `!=`, `IN`) always work regardless of truncation
+
+- **No non-trivial column casts**: Only no-op column casts are allowed; literal casts happen at compile time.
+
 - **Page-level NOT is conservative**: NOT is only inverted when the inner page selection is exact; otherwise it falls back to row-group evaluation.
-- **OR requires full support**: if any OR branch is unsupported at page level, page pruning is disabled for the whole OR.
-- **LIKE support is limited**: only prefix patterns (`'prefix%'`) are pushed down.
+
+- **OR requires full support**: If any OR branch is unsupported at page level, page pruning is disabled for the whole OR.
+
+- **LIKE support is limited**: Only prefix patterns (`'prefix%'`) are pushed down.
 
 ## Usage Examples
 
@@ -208,6 +237,20 @@ let result = PruneRequest::new(&metadata, &schema)
     .prune_async(&mut my_provider).await;
 ```
 
+**Byte array ordering (advanced):**
+```rust
+// Conservative (default): Requires exact min/max for ordering predicates
+let result = PruneRequest::new(&metadata, &schema)
+    .with_predicate(&col("name").gt(lit("prefix")))
+    .prune();
+
+// Aggressive: Allow truncated byte array statistics (may have false negatives)
+let result = PruneRequest::new(&metadata, &schema)
+    .with_predicate(&col("name").gt(lit("prefix")))
+    .allow_truncated_byte_array_ordering(true)
+    .prune();
+```
+
 ## Performance
 
 Reasonable expectations (actual results depend on file layout and metadata quality):
@@ -222,10 +265,10 @@ Reasonable expectations (actual results depend on file layout and metadata quali
 These are **guidance only** until benchmarks land.
 
 **Performance Factors:**
-- **Row group size** — Larger row groups → better statistics granularity
-- **Predicate selectivity** — Lower selectivity → more pruning opportunities
-- **Column cardinality** — Bloom filters shine for high-cardinality columns
-- **Page index availability** — Enables page-level pruning (Parquet 1.12+)
+- **Row group size**: Larger row groups -> better statistics granularity
+- **Predicate selectivity**: Lower selectivity -> more pruning opportunities
+- **Column cardinality**: Bloom filters shine for high-cardinality columns
+- **Page index availability**: Enables page-level pruning (Parquet 1.12+)
 
 **Overhead:** Metadata evaluation is typically small relative to I/O, but varies with predicate complexity and metadata availability.
 
@@ -233,8 +276,8 @@ These are **guidance only** until benchmarks land.
 
 Run the included examples to see end-to-end usage:
 
-- **`basic_usage`** — Row-group pruning with metadata and predicates
-- **`bloom_filter`** — Async API with bloom filter support
+- **`basic_usage`**: Row-group pruning with metadata and predicates
+- **`bloom_filter`**: Async API with bloom filter support
 
 ```bash
 # Row-group pruning example
@@ -244,32 +287,12 @@ cargo run --example basic_usage
 cargo run --example bloom_filter
 ```
 
-## When to Use Aisle
-
-**Good fit:**
-- Selective queries (reading <20% of data)
-- Large Parquet files (>100MB, multiple row groups)
-- Remote storage (S3, GCS) where I/O is expensive
-- High-cardinality point queries (user IDs, transaction IDs)
-- Time-series with range queries
-
-**Not needed:**
-- Full table scans (no pruning benefit)
-- Small files (<10MB, single row group)
-- Already using a query engine with built-in pruning (DataFusion, DuckDB)
-
-**Tips:** Combine Aisle with proper Parquet configuration:
-- Sort data by frequently-filtered columns
-- Use reasonable row group sizes (64-256MB)
-- Enable bloom filters for high-cardinality columns
-- Write page indexes (Parquet 1.12+)
-
 ## Architecture
 
 See detailed documentation:
-- **[Architecture](docs/architecture.md)** — Internal design and IR compilation
-- **[CLAUDE.md](CLAUDE.md)** — Project overview and design philosophy
-- **[Development Plan](docs/development_plan.md)** — Implementation roadmap
+- **[Architecture](docs/architecture.md)**: Internal design and IR compilation
+- **[CLAUDE.md](CLAUDE.md)**: Project overview and design philosophy
+- **[Development Plan](docs/development_plan.md)**: Implementation roadmap
 
 ## Testing
 

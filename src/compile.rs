@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use arrow_schema::{DataType, Field, Schema};
 use datafusion_common::{Column, ScalarValue};
 use datafusion_expr::{
-    Between, BinaryExpr, Expr, Operator, expr::{InList, Like}, utils::split_conjunction,
+    Between, BinaryExpr, Expr, Operator,
+    expr::{InList, Like},
+    utils::split_conjunction,
 };
 
 use crate::{
@@ -139,7 +141,6 @@ impl CompileResult {
     pub fn error_count(&self) -> usize {
         self.errors.len()
     }
-
 }
 
 pub fn compile_pruning_ir(expr: &Expr, schema: &Schema) -> CompileResult {
@@ -168,10 +169,10 @@ pub(crate) fn compile_pruning_ir_with_index(
 #[derive(Debug, Clone)]
 pub(crate) struct SchemaPathIndex {
     /// Maps full dotted paths to (DataType, Field)
-    /// Example: "a.b.c" → (Int32, field)
+    /// Example: "a.b.c" -> (Int32, field)
     paths: HashMap<String, (DataType, Field)>,
     /// Maps leaf names to all matching paths
-    /// Example: "c" → ["a.b.c", "x.y.c"] (for ambiguity detection)
+    /// Example: "c" -> ["a.b.c", "x.y.c"] (for ambiguity detection)
     leaf_to_paths: HashMap<String, Vec<String>>,
 }
 
@@ -203,14 +204,21 @@ impl SchemaPathIndex {
             }
             Some(relation) => {
                 // Relation-qualified - DataFusion parses multi-segment paths:
-                // "a.b.c.d" becomes Column { relation: Full { catalog: "a", schema: "b", table: "c" }, name: "d" }
-                // "a.b.c" becomes Column { relation: Partial { schema: "a", table: "b" }, name: "c" }
-                // "a.b" becomes Column { relation: Bare { table: "a" }, name: "b" }
+                // "a.b.c.d" becomes Column { relation: Full { catalog: "a", schema: "b", table: "c"
+                // }, name: "d" } "a.b.c" becomes Column { relation: Partial {
+                // schema: "a", table: "b" }, name: "c" } "a.b" becomes Column {
+                // relation: Bare { table: "a" }, name: "b" }
 
                 // Reconstruct the full path from relation components
                 let dotted = if let Some(catalog) = relation.catalog() {
                     // Four-segment: catalog.schema.table.name
-                    format!("{}.{}.{}.{}", catalog, relation.schema().unwrap(), relation.table(), column.name)
+                    format!(
+                        "{}.{}.{}.{}",
+                        catalog,
+                        relation.schema().unwrap(),
+                        relation.table(),
+                        column.name
+                    )
                 } else if let Some(schema) = relation.schema() {
                     // Three-segment: schema.table.name
                     format!("{}.{}.{}", schema, relation.table(), column.name)
@@ -241,11 +249,12 @@ impl SchemaPathIndex {
                         }
                         Err(CompileError::AmbiguousColumn { candidates, .. }) => {
                             // Leaf is ambiguous - check if any candidate is a suffix of dotted
-                            // Example: "a.b" vs "b" (b is suffix) → ambiguous
-                            // Example: "my_map.pairs.value" vs "my_map.key_value.value" (no suffix) → not ambiguous
-                            let has_suffix_candidate = candidates.iter().any(|c| {
-                                c != &dotted && dotted.ends_with(&format!(".{}", c))
-                            });
+                            // Example: "a.b" vs "b" (b is suffix) -> ambiguous
+                            // Example: "my_map.pairs.value" vs "my_map.key_value.value" (no suffix)
+                            // -> not ambiguous
+                            let has_suffix_candidate = candidates
+                                .iter()
+                                .any(|c| c != &dotted && dotted.ends_with(&format!(".{}", c)));
                             if has_suffix_candidate {
                                 // True ambiguity: dotted path vs shorter suffix path
                                 return Err(CompileError::AmbiguousColumn {
@@ -328,7 +337,10 @@ fn visit_field(
             if element_field.name() != "element" {
                 let standard_path = format!("{}.list.element", path);
                 let element_type = element_field.data_type().clone();
-                paths.insert(standard_path.clone(), (element_type, element_field.as_ref().clone()));
+                paths.insert(
+                    standard_path.clone(),
+                    (element_type, element_field.as_ref().clone()),
+                );
                 leaf_to_paths
                     .entry("element".to_string())
                     .or_insert_with(Vec::new)
@@ -341,10 +353,16 @@ fn visit_field(
             if let DataType::Struct(kv_fields) = entries_field.data_type() {
                 let entries_path = format!("{}.{}", path, entries_field.name());
                 for kv_field in kv_fields.iter() {
-                    visit_field(kv_field.as_ref(), entries_path.clone(), paths, leaf_to_paths);
+                    visit_field(
+                        kv_field.as_ref(),
+                        entries_path.clone(),
+                        paths,
+                        leaf_to_paths,
+                    );
                 }
 
-                // Also register standard "key"/"value" leaf names when Arrow uses non-standard names
+                // Also register standard "key"/"value" leaf names when Arrow uses non-standard
+                // names
                 if kv_fields.len() >= 2 {
                     let key_field = &kv_fields[0];
                     let value_field = &kv_fields[1];
@@ -363,7 +381,10 @@ fn visit_field(
                         let value_path = format!("{}.value", entries_path);
                         paths.insert(
                             value_path.clone(),
-                            (value_field.data_type().clone(), value_field.as_ref().clone()),
+                            (
+                                value_field.data_type().clone(),
+                                value_field.as_ref().clone(),
+                            ),
                         );
                         leaf_to_paths
                             .entry("value".to_string())
@@ -407,7 +428,10 @@ fn visit_field(
                             let value_path = format!("{}.value", standard_path);
                             paths.insert(
                                 value_path.clone(),
-                                (value_field.data_type().clone(), value_field.as_ref().clone()),
+                                (
+                                    value_field.data_type().clone(),
+                                    value_field.as_ref().clone(),
+                                ),
                             );
                             leaf_to_paths
                                 .entry("value".to_string())
@@ -706,19 +730,23 @@ fn extract_literal(expr: &Expr) -> Result<ScalarValue, CompileError> {
         Expr::Alias(alias) => extract_literal(&alias.expr),
         Expr::Cast(cast) => {
             let literal = extract_literal(&cast.expr)?;
-            literal.cast_to(&cast.data_type).map_err(|e| CompileError::TypeCastError {
-                literal_type: literal.data_type().clone(),
-                target_type: cast.data_type.clone(),
-                reason: e.to_string(),
-            })
+            literal
+                .cast_to(&cast.data_type)
+                .map_err(|e| CompileError::TypeCastError {
+                    literal_type: literal.data_type().clone(),
+                    target_type: cast.data_type.clone(),
+                    reason: e.to_string(),
+                })
         }
         Expr::TryCast(cast) => {
             let literal = extract_literal(&cast.expr)?;
-            literal.cast_to(&cast.data_type).map_err(|e| CompileError::TypeCastError {
-                literal_type: literal.data_type().clone(),
-                target_type: cast.data_type.clone(),
-                reason: e.to_string(),
-            })
+            literal
+                .cast_to(&cast.data_type)
+                .map_err(|e| CompileError::TypeCastError {
+                    literal_type: literal.data_type().clone(),
+                    target_type: cast.data_type.clone(),
+                    reason: e.to_string(),
+                })
         }
         _ => Err(CompileError::NotALiteral {
             found: expr_type_name(expr),
@@ -802,21 +830,22 @@ fn map_op(op: Operator) -> Result<CmpOp, CompileError> {
 #[cfg(test)]
 mod tests {
     use arrow_schema::{DataType, Field, Schema};
-    use datafusion_expr::{col, lit, expr::{Cast, TryCast}};
+    use datafusion_expr::{
+        col,
+        expr::{Cast, TryCast},
+        lit,
+    };
 
     use super::*;
 
-    fn find_rule<'a>(
-        rule: &'a IrExpr,
-        predicate: &impl Fn(&IrExpr) -> bool,
-    ) -> Option<&'a IrExpr> {
+    fn find_rule<'a>(rule: &'a IrExpr, predicate: &impl Fn(&IrExpr) -> bool) -> Option<&'a IrExpr> {
         if predicate(rule) {
             return Some(rule);
         }
         match rule {
-            IrExpr::And(parts) | IrExpr::Or(parts) => parts
-                .iter()
-                .find_map(|part| find_rule(part, predicate)),
+            IrExpr::And(parts) | IrExpr::Or(parts) => {
+                parts.iter().find_map(|part| find_rule(part, predicate))
+            }
             IrExpr::Not(inner) => find_rule(inner, predicate),
             _ => None,
         }
@@ -828,8 +857,10 @@ mod tests {
     }
 
     fn find_in_list(rule: &IrExpr) -> &IrExpr {
-        find_rule(rule, &|candidate| matches!(candidate, IrExpr::InList { .. }))
-            .expect("Expected InList expression")
+        find_rule(rule, &|candidate| {
+            matches!(candidate, IrExpr::InList { .. })
+        })
+        .expect("Expected InList expression")
     }
 
     #[test]
@@ -1088,11 +1119,7 @@ mod tests {
             DataType::Struct(Fields::from(vec![d_field])),
             false,
         )]);
-        let b_fields = Fields::from(vec![Field::new(
-            "b",
-            DataType::Struct(c_fields),
-            false,
-        )]);
+        let b_fields = Fields::from(vec![Field::new("b", DataType::Struct(c_fields), false)]);
         let schema = Schema::new(vec![Field::new("a", DataType::Struct(b_fields), false)]);
 
         // Reference "a.b.c.d" - DataFusion parses as TableReference::Full
@@ -1117,16 +1144,8 @@ mod tests {
             DataType::Struct(Fields::from(vec![e_field])),
             false,
         )]);
-        let c_fields = Fields::from(vec![Field::new(
-            "c",
-            DataType::Struct(d_fields),
-            false,
-        )]);
-        let b_fields = Fields::from(vec![Field::new(
-            "b",
-            DataType::Struct(c_fields),
-            false,
-        )]);
+        let c_fields = Fields::from(vec![Field::new("c", DataType::Struct(d_fields), false)]);
+        let b_fields = Fields::from(vec![Field::new("b", DataType::Struct(c_fields), false)]);
         let schema = Schema::new(vec![Field::new("a", DataType::Struct(b_fields), false)]);
 
         // DataFusion's TableReference only supports catalog.schema.table (3 components)
@@ -1345,7 +1364,7 @@ mod tests {
             "my_map",
             DataType::Map(
                 Arc::new(Field::new(
-                    "pairs",  // Non-standard name
+                    "pairs", // Non-standard name
                     DataType::Struct(
                         vec![
                             Field::new("key", DataType::Utf8, false),
@@ -1402,7 +1421,10 @@ mod tests {
         // Schema: FixedSizeList<Float32, 10> - arrays of exactly 10 elements
         let schema = Schema::new(vec![Field::new(
             "fixed_list",
-            DataType::FixedSizeList(Arc::new(Field::new("element", DataType::Float32, false)), 10),
+            DataType::FixedSizeList(
+                Arc::new(Field::new("element", DataType::Float32, false)),
+                10,
+            ),
             true,
         )]);
 
@@ -1572,9 +1594,11 @@ mod tests {
 
 #[cfg(test)]
 mod debug_tests {
-    use super::*;
-    use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
+
+    use arrow_schema::{DataType, Field, Schema};
+
+    use super::*;
 
     #[test]
     fn debug_map_paths() {
@@ -1602,7 +1626,7 @@ mod debug_tests {
         for (path, (dtype, _)) in &index.paths {
             println!("  {} -> {:?}", path, dtype);
         }
-        
+
         println!("\nLeaf mappings:");
         for (leaf, paths) in &index.leaf_to_paths {
             println!("  {} -> {:?}", leaf, paths);

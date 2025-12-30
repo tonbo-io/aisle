@@ -2,12 +2,13 @@ use arrow_schema::Schema;
 use datafusion_expr::Expr;
 use parquet::file::metadata::ParquetMetaData;
 
+use super::{
+    api::{prune_compiled_with_bloom, prune_compiled_with_bloom_provider},
+    options::{PruneOptions, PruneOptionsBuilder},
+    provider::AsyncBloomFilterProvider,
+    result::PruneResult,
+};
 use crate::compile::{CompileResult, compile_pruning_ir};
-
-use super::api::{prune_compiled_with_bloom, prune_compiled_with_bloom_provider};
-use super::options::{PruneOptions, PruneOptionsBuilder};
-use super::provider::AsyncBloomFilterProvider;
-use super::result::PruneResult;
 
 /// Builder for one-shot metadata pruning operations.
 ///
@@ -18,8 +19,8 @@ use super::result::PruneResult;
 ///
 /// ```no_run
 /// use aisle::PruneRequest;
+/// use arrow_schema::{DataType, Field, Schema};
 /// use datafusion_expr::{col, lit};
-/// use arrow_schema::{Schema, Field, DataType};
 /// use parquet::file::metadata::ParquetMetaData;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,7 +53,7 @@ impl<'a> PruneRequest<'a> {
     ///
     /// ```no_run
     /// use aisle::PruneRequest;
-    /// use arrow_schema::{Schema, Field, DataType};
+    /// use arrow_schema::{DataType, Field, Schema};
     /// use parquet::file::metadata::ParquetMetaData;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -77,8 +78,8 @@ impl<'a> PruneRequest<'a> {
     ///
     /// ```no_run
     /// use aisle::PruneRequest;
+    /// use arrow_schema::{DataType, Field, Schema};
     /// use datafusion_expr::{col, lit};
-    /// use arrow_schema::{Schema, Field, DataType};
     /// use parquet::file::metadata::ParquetMetaData;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -86,8 +87,7 @@ impl<'a> PruneRequest<'a> {
     /// # let metadata: ParquetMetaData = todo!();
     /// let expr = col("age").gt(lit(18));
     ///
-    /// let request = PruneRequest::new(&metadata, &schema)
-    ///     .with_predicate(&expr);
+    /// let request = PruneRequest::new(&metadata, &schema).with_predicate(&expr);
     /// # Ok(())
     /// # }
     /// ```
@@ -105,14 +105,13 @@ impl<'a> PruneRequest<'a> {
     ///
     /// ```no_run
     /// use aisle::PruneRequest;
-    /// use arrow_schema::{Schema, Field, DataType};
+    /// use arrow_schema::{DataType, Field, Schema};
     /// use parquet::file::metadata::ParquetMetaData;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
     /// # let metadata: ParquetMetaData = todo!();
-    /// let request = PruneRequest::new(&metadata, &schema)
-    ///     .enable_page_index(true);
+    /// let request = PruneRequest::new(&metadata, &schema).enable_page_index(true);
     /// # Ok(())
     /// # }
     /// ```
@@ -130,14 +129,13 @@ impl<'a> PruneRequest<'a> {
     ///
     /// ```no_run
     /// use aisle::PruneRequest;
-    /// use arrow_schema::{Schema, Field, DataType};
+    /// use arrow_schema::{DataType, Field, Schema};
     /// use parquet::file::metadata::ParquetMetaData;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
     /// # let metadata: ParquetMetaData = todo!();
-    /// let request = PruneRequest::new(&metadata, &schema)
-    ///     .enable_bloom_filter(true);
+    /// let request = PruneRequest::new(&metadata, &schema).enable_bloom_filter(true);
     /// # Ok(())
     /// # }
     /// ```
@@ -155,19 +153,27 @@ impl<'a> PruneRequest<'a> {
     ///
     /// ```no_run
     /// use aisle::PruneRequest;
-    /// use arrow_schema::{Schema, Field, DataType};
+    /// use arrow_schema::{DataType, Field, Schema};
     /// use parquet::file::metadata::ParquetMetaData;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
     /// # let metadata: ParquetMetaData = todo!();
-    /// let request = PruneRequest::new(&metadata, &schema)
-    ///     .emit_roaring(true);
+    /// let request = PruneRequest::new(&metadata, &schema).emit_roaring(true);
     /// # Ok(())
     /// # }
     /// ```
     pub fn emit_roaring(mut self, enable: bool) -> Self {
         self.options = self.options.emit_roaring(enable);
+        self
+    }
+
+    /// Allows ordering predicates to use truncated byte array statistics.
+    ///
+    /// When disabled (default), byte array ordering relies only on exact min/max
+    /// statistics with type-defined (unsigned) column order.
+    pub fn allow_truncated_byte_array_ordering(mut self, enable: bool) -> Self {
+        self.options = self.options.allow_truncated_byte_array_ordering(enable);
         self
     }
 
@@ -179,8 +185,8 @@ impl<'a> PruneRequest<'a> {
     ///
     /// ```no_run
     /// use aisle::PruneRequest;
+    /// use arrow_schema::{DataType, Field, Schema};
     /// use datafusion_expr::{col, lit};
-    /// use arrow_schema::{Schema, Field, DataType};
     /// use parquet::file::metadata::ParquetMetaData;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -192,9 +198,11 @@ impl<'a> PruneRequest<'a> {
     ///     .with_predicate(&expr)
     ///     .prune();
     ///
-    /// println!("Keep {} of {} row groups",
-    ///          result.row_groups().len(),
-    ///          metadata.num_row_groups());
+    /// println!(
+    ///     "Keep {} of {} row groups",
+    ///     result.row_groups().len(),
+    ///     metadata.num_row_groups()
+    /// );
     /// # Ok(())
     /// # }
     /// ```
@@ -240,10 +248,7 @@ impl<'a> PruneRequest<'a> {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn prune_async<P: AsyncBloomFilterProvider>(
-        self,
-        provider: &mut P,
-    ) -> PruneResult {
+    pub async fn prune_async<P: AsyncBloomFilterProvider>(self, provider: &mut P) -> PruneResult {
         let options = self.options.build();
         if let Some(expr) = self.expr {
             let compile = compile_pruning_ir(expr, self.schema);

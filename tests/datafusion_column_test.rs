@@ -1,10 +1,10 @@
 /// Test to verify how DataFusion represents nested column access
 ///
 /// KEY FINDINGS:
-/// 1. col("a.b") → Column { relation: Some("a"), name: "b" } (table-qualified, NOT nested)
-/// 2. col("a.b.c") → Column { relation: Partial {schema: "a", table: "b"}, name: "c" }
+/// 1. col("a.b") -> Column { relation: Some("a"), name: "b" } (table-qualified, NOT nested)
+/// 2. col("a.b.c") -> Column { relation: Partial {schema: "a", table: "b"}, name: "c" }
 ///    (schema-qualified)
-/// 3. Arrow Schema field_with_name("a.b") → Error (dotted paths not supported)
+/// 3. Arrow Schema field_with_name("a.b") -> Error (dotted paths not supported)
 /// 4. Nested struct access in DataFusion uses GetIndexedField expression (not Column)
 ///
 /// IMPLICATION FOR AISLE:

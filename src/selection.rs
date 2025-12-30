@@ -82,8 +82,8 @@ pub fn row_selection_to_roaring(
 /// use roaring::RoaringBitmap;
 ///
 /// let mut bitmap = RoaringBitmap::new();
-/// bitmap.insert_range(10..20);  // Select rows 10-19
-/// bitmap.insert_range(50..60);  // Select rows 50-59
+/// bitmap.insert_range(10..20); // Select rows 10-19
+/// bitmap.insert_range(50..60); // Select rows 50-59
 ///
 /// let selection = roaring_to_row_selection(&bitmap, 100);
 /// // Resulting selection: [skip(10), select(10), skip(30), select(10), skip(40)]
@@ -171,10 +171,7 @@ mod tests {
     #[test]
     fn roaring_rejects_malformed_selection() {
         // Selection extends beyond total_rows
-        let selection = RowSelection::from(vec![
-            RowSelector::select(3),
-            RowSelector::select(3),
-        ]);
+        let selection = RowSelection::from(vec![RowSelector::select(3), RowSelector::select(3)]);
 
         let result = row_selection_to_roaring(&selection, 5);
 

@@ -1,14 +1,7 @@
+use super::{context::RowGroupContext, page, page::PagePruning};
 use crate::ir::TriState;
 
-use super::context::RowGroupContext;
-use super::page;
-use super::page::PagePruning;
-
-pub(super) fn eval_is_null(
-    column: &str,
-    negated: bool,
-    ctx: &RowGroupContext<'_>,
-) -> TriState {
+pub(super) fn eval_is_null(column: &str, negated: bool, ctx: &RowGroupContext<'_>) -> TriState {
     let row_group = ctx.metadata.row_group(ctx.row_group_idx);
     let col_idx = match ctx.column_lookup.get(column) {
         Some(idx) => *idx,

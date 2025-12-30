@@ -1,8 +1,7 @@
 use parquet::arrow::arrow_reader::RowSelection;
 use roaring::RoaringBitmap;
 
-use crate::compile::CompileResult;
-use crate::selection::row_selection_to_roaring;
+use crate::{compile::CompileResult, selection::row_selection_to_roaring};
 
 /// Result of metadata pruning
 #[derive(Clone, Debug)]

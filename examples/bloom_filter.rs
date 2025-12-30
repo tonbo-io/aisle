@@ -4,7 +4,6 @@
 /// 1. Async Parquet reading with bloom filters
 /// 2. Using bloom filters for point queries (= and IN predicates)
 /// 3. Combining statistics + bloom filters for aggressive pruning
-
 use aisle::PruneRequest;
 use datafusion_expr::{col, lit};
 
@@ -38,13 +37,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&predicate)
         .enable_page_index(false)
-        .enable_bloom_filter(true)  // Key: Enable bloom filter pruning!
+        .enable_bloom_filter(true) // Key: Enable bloom filter pruning!
         .emit_roaring(false)
-        .prune_async(&mut builder).await;
+        .prune_async(&mut builder)
+        .await;
 
     println!("Pruning result:");
     println!("  ✓ Kept row groups: {:?}", result.row_groups());
-    println!("  ✗ Pruned: {} of 3 row groups ({}% I/O reduction)\n",
+    println!(
+        "  ✗ Pruned: {} of 3 row groups ({}% I/O reduction)\n",
         3 - result.row_groups().len(),
         ((3 - result.row_groups().len()) as f64 / 3.0 * 100.0) as i32
     );
@@ -55,14 +56,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("How pruning works:");
     println!("  Row group 0: stats show range [1,3]");
-    println!("    → Doesn't contain 1000 ✓ Pruned by statistics");
+    println!("    -> Doesn't contain 1000 ✓ Pruned by statistics");
     println!();
     println!("  Row group 1: stats show range [1000,1002]");
-    println!("    → Might contain 1000 (by stats)");
-    println!("    → Bloom filter checked: value 1000 found ✓ Keep");
+    println!("    -> Might contain 1000 (by stats)");
+    println!("    -> Bloom filter checked: value 1000 found ✓ Keep");
     println!();
     println!("  Row group 2: stats show range [5000,5002]");
-    println!("    → Doesn't contain 1000 ✓ Pruned by statistics");
+    println!("    -> Doesn't contain 1000 ✓ Pruned by statistics");
     println!();
 
     println!("Why bloom filters matter:");
@@ -81,6 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 mod helpers {
     use std::sync::Arc;
+
     use arrow_array::{Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use parquet::{
@@ -88,8 +90,8 @@ mod helpers {
         file::properties::{EnabledStatistics, WriterProperties},
     };
 
-    pub async fn create_parquet_with_bloom_filters(
-    ) -> Result<(Vec<u8>, Arc<Schema>), Box<dyn std::error::Error>> {
+    pub async fn create_parquet_with_bloom_filters()
+    -> Result<(Vec<u8>, Arc<Schema>), Box<dyn std::error::Error>> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("user_id", DataType::Int64, false),
             Field::new("username", DataType::Utf8, false),
@@ -97,9 +99,24 @@ mod helpers {
         ]));
 
         let batches = vec![
-            create_batch(schema.clone(), &[1, 2, 3], &["alice", "bob", "charlie"], &[100, 200, 150]),
-            create_batch(schema.clone(), &[1000, 1001, 1002], &["dave", "eve", "frank"], &[300, 250, 400]),
-            create_batch(schema.clone(), &[5000, 5001, 5002], &["grace", "henry", "iris"], &[500, 450, 350]),
+            create_batch(
+                schema.clone(),
+                &[1, 2, 3],
+                &["alice", "bob", "charlie"],
+                &[100, 200, 150],
+            ),
+            create_batch(
+                schema.clone(),
+                &[1000, 1001, 1002],
+                &["dave", "eve", "frank"],
+                &[300, 250, 400],
+            ),
+            create_batch(
+                schema.clone(),
+                &[5000, 5001, 5002],
+                &["grace", "henry", "iris"],
+                &[500, 450, 350],
+            ),
         ];
 
         let mut buffer = Vec::new();

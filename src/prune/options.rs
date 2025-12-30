@@ -4,6 +4,7 @@ pub struct PruneOptions {
     enable_page_index: bool,
     emit_roaring: bool,
     enable_bloom_filter: bool,
+    allow_truncated_byte_array_ordering: bool,
 }
 
 impl PruneOptions {
@@ -36,6 +37,11 @@ impl PruneOptions {
     pub fn enable_bloom_filter(&self) -> bool {
         self.enable_bloom_filter
     }
+
+    /// Check if ordering predicates can use truncated byte array stats
+    pub fn allow_truncated_byte_array_ordering(&self) -> bool {
+        self.allow_truncated_byte_array_ordering
+    }
 }
 
 impl Default for PruneOptions {
@@ -44,6 +50,7 @@ impl Default for PruneOptions {
             enable_page_index: true,
             emit_roaring: true,
             enable_bloom_filter: true,
+            allow_truncated_byte_array_ordering: false,
         }
     }
 }
@@ -54,6 +61,7 @@ pub struct PruneOptionsBuilder {
     enable_page_index: Option<bool>,
     emit_roaring: Option<bool>,
     enable_bloom_filter: Option<bool>,
+    allow_truncated_byte_array_ordering: Option<bool>,
 }
 
 impl PruneOptionsBuilder {
@@ -85,13 +93,11 @@ impl PruneOptionsBuilder {
     /// use aisle::PruneOptions;
     ///
     /// // For most datasets (< 4.2B rows), roaring bitmap is useful
-    /// let options = PruneOptions::builder()
-    ///     .emit_roaring(true)
-    ///     .build();
+    /// let options = PruneOptions::builder().emit_roaring(true).build();
     ///
     /// // For very large datasets, you might disable it
     /// let options = PruneOptions::builder()
-    ///     .emit_roaring(false)  // Skip roaring, use RowSelection only
+    ///     .emit_roaring(false) // Skip roaring, use RowSelection only
     ///     .build();
     /// ```
     pub fn emit_roaring(mut self, value: bool) -> Self {
@@ -109,12 +115,26 @@ impl PruneOptionsBuilder {
         self
     }
 
+    /// Allow ordering predicates to use truncated BYTE_ARRAY/FIXED_LEN_BYTE_ARRAY stats (default:
+    /// false).
+    ///
+    /// When disabled, byte array ordering requires type-defined (unsigned) column order
+    /// and exact min/max statistics. When enabled, truncation is allowed but column order
+    /// is still respected.
+    pub fn allow_truncated_byte_array_ordering(mut self, value: bool) -> Self {
+        self.allow_truncated_byte_array_ordering = Some(value);
+        self
+    }
+
     /// Build the PruneOptions
     pub fn build(self) -> PruneOptions {
         PruneOptions {
             enable_page_index: self.enable_page_index.unwrap_or(true),
             emit_roaring: self.emit_roaring.unwrap_or(true),
             enable_bloom_filter: self.enable_bloom_filter.unwrap_or(true),
+            allow_truncated_byte_array_ordering: self
+                .allow_truncated_byte_array_ordering
+                .unwrap_or(false),
         }
     }
 }

@@ -29,7 +29,7 @@
 ```
 DataFusion Expr + Arrow Schema
     ↓
-Normalize & Compile → Pruning IR (best-effort)
+Normalize & Compile -> Pruning IR (best-effort)
     ↓
 Evaluate IR against Parquet Metadata
     ├─ Row-group pruning (statistics + bloom filters)
@@ -104,9 +104,9 @@ pub enum IrExpr {
 ### Tri-State Semantics
 
 Each predicate evaluates to `{True, False, Unknown}`:
-- **True**: Definitely matches → Keep data
-- **False**: Definitely doesn't match → Prune data
-- **Unknown**: Might match → Keep data (conservative)
+- **True**: Definitely matches -> Keep data
+- **False**: Definitely doesn't match -> Prune data
+- **Unknown**: Might match -> Keep data (conservative)
 
 This ensures pruning is safe (no false negatives).
 
@@ -115,8 +115,8 @@ This ensures pruning is safe (no false negatives).
 1. **Normalize**: Simplify DataFusion `Expr`, constant fold
 2. **Split conjunctions**: Break `AND` into individual predicates
 3. **Compile to IR**: Best-effort translation
-   - Supported predicates → `IrExpr`
-   - Unsupported predicates → logged in `CompileResult::errors`
+   - Supported predicates -> `IrExpr`
+   - Unsupported predicates -> logged in `CompileResult::errors`
 4. **Type checking**: Validate column types against schema
 5. **Cast handling**:
    - **Column casts**: Only no-op casts allowed (same type)
@@ -145,8 +145,8 @@ This ensures pruning is safe (no false negatives).
 
 For each row group:
 1. Evaluate IR against row-group statistics
-2. If predicate is **False** → Drop row group
-3. If predicate is **True** or **Unknown** → Keep row group
+2. If predicate is **False** -> Drop row group
+3. If predicate is **True** or **Unknown** -> Keep row group
 
 ### Page-Level Pruning (Optional)
 
@@ -163,8 +163,8 @@ If page indexes exist:
 
 For `=` and `IN` predicates with bloom filters:
 1. Check bloom filter for definite absence
-2. If **not present** → Prune row group
-3. If **might be present** → Keep row group (false positives possible)
+2. If **not present** -> Prune row group
+3. If **might be present** -> Keep row group (false positives possible)
 
 ## RowSelection Alignment
 
@@ -186,8 +186,8 @@ Only **no-op casts** allowed (cast to same type):
 
 ### Literal Casts (Compile-Time)
 Performed at **compile time**:
-- ✅ `id = CAST('100' AS INT64)` → compiled to `id = 100`
-- ✅ `id IN (CAST('1' AS INT64), CAST('2' AS INT64))` → `id IN (1, 2)`
+- ✅ `id = CAST('100' AS INT64)` -> compiled to `id = 100`
+- ✅ `id IN (CAST('1' AS INT64), CAST('2' AS INT64))` -> `id IN (1, 2)`
 
 **Rationale**: Safe to cast literals upfront without affecting statistics.
 
@@ -198,8 +198,8 @@ Performed at **compile time**:
 **Limitation**: u32::MAX rows (~4.2 billion)
 
 **Behavior**:
-- If `total_rows > u32::MAX` → Skip RoaringBitmap, use RowSelection only
-- Otherwise → Generate both formats (configurable via `emit_roaring`)
+- If `total_rows > u32::MAX` -> Skip RoaringBitmap, use RowSelection only
+- Otherwise -> Generate both formats (configurable via `emit_roaring`)
 
 ## Error Handling
 

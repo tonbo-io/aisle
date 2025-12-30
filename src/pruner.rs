@@ -1,12 +1,16 @@
 use arrow_schema::{Schema, SchemaRef};
 use datafusion_expr::Expr;
-use parquet::arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder};
-use parquet::file::metadata::ParquetMetaData;
+use parquet::{
+    arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder},
+    file::metadata::ParquetMetaData,
+};
 
-use crate::compile::{build_schema_path_index, compile_pruning_ir_with_index, SchemaPathIndex};
-use crate::prune::{
-    prune_compiled, prune_compiled_with_bloom_provider, AsyncBloomFilterProvider, PruneOptions,
-    PruneResult,
+use crate::{
+    compile::{SchemaPathIndex, build_schema_path_index, compile_pruning_ir_with_index},
+    prune::{
+        AsyncBloomFilterProvider, PruneOptions, PruneResult, prune_compiled,
+        prune_compiled_with_bloom_provider,
+    },
 };
 
 /// Reusable pruning façade for a fixed schema.
@@ -30,10 +34,11 @@ use crate::prune::{
 /// ## Basic Usage
 ///
 /// ```
-/// use aisle::Pruner;
-/// use datafusion_expr::{col, lit};
 /// use std::sync::Arc;
-/// use arrow_schema::{Schema, Field, DataType};
+///
+/// use aisle::Pruner;
+/// use arrow_schema::{DataType, Field, Schema};
+/// use datafusion_expr::{col, lit};
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let schema = Arc::new(Schema::new(vec![
@@ -50,9 +55,11 @@ use crate::prune::{
 ///     let expr = col("age").gt(lit(18));
 ///
 ///     let result = pruner.prune(&metadata, &expr);
-///     println!("Keep {} of {} row groups",
-///              result.row_groups().len(),
-///              metadata.num_row_groups());
+///     println!(
+///         "Keep {} of {} row groups",
+///         result.row_groups().len(),
+///         metadata.num_row_groups()
+///     );
 /// }
 /// # */
 /// # Ok(())
@@ -62,7 +69,7 @@ use crate::prune::{
 /// ## Custom Options
 ///
 /// ```
-/// use aisle::{Pruner, PruneOptions};
+/// use aisle::{PruneOptions, Pruner};
 /// # use std::sync::Arc;
 /// # use arrow_schema::{Schema, Field, DataType};
 ///
@@ -83,8 +90,7 @@ use crate::prune::{
 /// ## Concurrent Usage
 ///
 /// ```
-/// use std::sync::Arc;
-/// use std::thread;
+/// use std::{sync::Arc, thread};
 /// # use aisle::Pruner;
 /// # use arrow_schema::Schema;
 ///
@@ -94,15 +100,17 @@ use crate::prune::{
 /// # ]));
 /// let pruner = Arc::new(Pruner::try_new(schema)?);
 ///
-/// let handles: Vec<_> = (0..4).map(|_| {
-///     let pruner = Arc::clone(&pruner);
-///     thread::spawn(move || {
-///         // Each thread can safely use the same Pruner
+/// let handles: Vec<_> = (0..4)
+///     .map(|_| {
+///         let pruner = Arc::clone(&pruner);
+///         thread::spawn(move || {
+///             // Each thread can safely use the same Pruner
 ///         # /*
-///         pruner.prune(&metadata, &expr)
+///             pruner.prune(&metadata, &expr)
 ///         # */
+///         })
 ///     })
-/// }).collect();
+///     .collect();
 /// # Ok(())
 /// # }
 /// ```
@@ -125,14 +133,13 @@ impl Pruner {
     /// # Examples
     ///
     /// ```
-    /// use aisle::Pruner;
     /// use std::sync::Arc;
-    /// use arrow_schema::{Schema, Field, DataType};
+    ///
+    /// use aisle::Pruner;
+    /// use arrow_schema::{DataType, Field, Schema};
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let schema = Arc::new(Schema::new(vec![
-    ///     Field::new("id", DataType::Int64, false),
-    /// ]));
+    /// let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     ///
     /// let pruner = Pruner::try_new(schema)?;
     /// # Ok(())
@@ -151,18 +158,19 @@ impl Pruner {
     /// # Examples
     ///
     /// ```
-    /// use aisle::{Pruner, PruneOptions};
     /// use std::sync::Arc;
-    /// use arrow_schema::{Schema, Field, DataType};
+    ///
+    /// use aisle::{PruneOptions, Pruner};
+    /// use arrow_schema::{DataType, Field, Schema};
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let schema = Arc::new(Schema::new(vec![
-    ///     Field::new("value", DataType::Float64, true),
-    /// ]));
+    /// let schema = Arc::new(Schema::new(vec![Field::new(
+    ///     "value",
+    ///     DataType::Float64,
+    ///     true,
+    /// )]));
     ///
-    /// let options = PruneOptions::builder()
-    ///     .enable_page_index(false)
-    ///     .build();
+    /// let options = PruneOptions::builder().enable_page_index(false).build();
     ///
     /// let pruner = Pruner::try_with_options(schema, options)?;
     /// # Ok(())
@@ -212,9 +220,7 @@ impl Pruner {
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    /// let options = PruneOptions::builder()
-    ///     .enable_page_index(true)
-    ///     .build();
+    /// let options = PruneOptions::builder().enable_page_index(true).build();
     ///
     /// let pruner = Pruner::try_with_options(schema, options)?;
     /// let opts = pruner.options();
@@ -253,9 +259,11 @@ impl Pruner {
     /// let metadata = load_parquet_metadata("users.parquet")?;
     /// let result = pruner.prune(&metadata, &expr);
     ///
-    /// println!("Keep {} of {} row groups",
-    ///          result.row_groups().len(),
-    ///          metadata.num_row_groups());
+    /// println!(
+    ///     "Keep {} of {} row groups",
+    ///     result.row_groups().len(),
+    ///     metadata.num_row_groups()
+    /// );
     ///
     /// if !result.compile_result().errors().is_empty() {
     ///     eprintln!("Compilation errors: {:?}", result.compile_result().errors());
@@ -265,19 +273,18 @@ impl Pruner {
     /// # }
     /// ```
     pub fn prune(&self, metadata: &ParquetMetaData, expr: &Expr) -> PruneResult {
-        let compile =
-            compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
+        let compile = compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
         prune_compiled(metadata, self.schema.as_ref(), compile, &self.options)
     }
 
-    /// Prune Parquet metadata using the cached schema index and bloom filters from the async reader.
+    /// Prune Parquet metadata using the cached schema index and bloom filters from the async
+    /// reader.
     pub async fn prune_with_async_reader<T: AsyncFileReader + 'static>(
         &self,
         builder: &mut ParquetRecordBatchStreamBuilder<T>,
         expr: &Expr,
     ) -> PruneResult {
-        let compile =
-            compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
+        let compile = compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
         let metadata = builder.metadata().clone();
         prune_compiled_with_bloom_provider(
             metadata.as_ref(),
@@ -296,8 +303,7 @@ impl Pruner {
         expr: &Expr,
         provider: &mut P,
     ) -> PruneResult {
-        let compile =
-            compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
+        let compile = compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
         prune_compiled_with_bloom_provider(
             metadata,
             self.schema.as_ref(),

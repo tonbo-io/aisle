@@ -41,7 +41,7 @@ High-level implementation flow:
 ```
 DataFusion Expr + Arrow Schema
     ↓
-Normalize & Compile → Pruning IR
+Normalize & Compile -> Pruning IR
     ↓
 Evaluate against Parquet metadata
     ↓
@@ -52,7 +52,7 @@ Apply to ParquetRecordBatchReader
 
 ### Module Structure
 
-- **`compile`**: DataFusion Expr → Pruning IR compilation
+- **`compile`**: DataFusion Expr -> Pruning IR compilation
 - **`ir`**: Internal representation for metadata-evaluable predicates
 - **`prune`**: Core pruning logic (row-group + page-level)
   - `request`: Builder API (`PruneRequest`)

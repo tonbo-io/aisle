@@ -7,15 +7,18 @@ use parquet::{
     file::metadata::ParquetMetaData,
 };
 
-use crate::compile::CompileResult;
-use crate::ir::{IrExpr, TriState};
-use crate::selection::row_selection_to_roaring;
-
-use super::context::{RowGroupContext, build_column_lookup};
-use super::eval;
-use super::options::PruneOptions;
-use super::provider::AsyncBloomFilterProvider;
-use super::result::PruneResult;
+use super::{
+    context::{RowGroupContext, build_column_lookup},
+    eval,
+    options::PruneOptions,
+    provider::AsyncBloomFilterProvider,
+    result::PruneResult,
+};
+use crate::{
+    compile::CompileResult,
+    ir::{IrExpr, TriState},
+    selection::row_selection_to_roaring,
+};
 
 pub(crate) fn prune_compiled(
     metadata: &ParquetMetaData,
@@ -39,13 +42,14 @@ pub(super) fn prune_compiled_with_bloom(
 
     for row_group_idx in 0..metadata.num_row_groups() {
         let row_count = metadata.row_group(row_group_idx).num_rows() as usize;
-        let tri = evaluator.eval_row_group_conjunction(compile.prunable(), row_group_idx, None);
+        let tri =
+            evaluator.eval_row_group_conjunction(compile.prunable(), row_group_idx, None, options);
         if tri == TriState::False {
             continue;
         }
 
         let mut selection = if options.enable_page_index() {
-            evaluator.eval_pages_for_predicates(compile.prunable(), row_group_idx)
+            evaluator.eval_pages_for_predicates(compile.prunable(), row_group_idx, options)
         } else {
             None
         };
@@ -76,8 +80,8 @@ pub(super) fn prune_compiled_with_bloom(
                 // This is expected for very large datasets (>4.2B rows)
                 // Users should use RowSelection directly in this case
                 eprintln!(
-                    "Note: Dataset has {} rows (exceeds u32::MAX limit of {}). \
-                     RoaringBitmap output skipped. Use RowSelection for large datasets.",
+                    "Note: Dataset has {} rows (exceeds u32::MAX limit of {}). RoaringBitmap \
+                     output skipped. Use RowSelection for large datasets.",
                     total_rows,
                     u32::MAX
                 );
@@ -125,14 +129,18 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
             None
         };
 
-        let tri =
-            evaluator.eval_row_group_conjunction(compile.prunable(), row_group_idx, bloom_filters);
+        let tri = evaluator.eval_row_group_conjunction(
+            compile.prunable(),
+            row_group_idx,
+            bloom_filters,
+            options,
+        );
         if tri == TriState::False {
             continue;
         }
 
         let mut selection = if options.enable_page_index() {
-            evaluator.eval_pages_for_predicates(compile.prunable(), row_group_idx)
+            evaluator.eval_pages_for_predicates(compile.prunable(), row_group_idx, options)
         } else {
             None
         };
@@ -163,8 +171,8 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
                 // This is expected for very large datasets (>4.2B rows)
                 // Users should use RowSelection directly in this case
                 eprintln!(
-                    "Note: Dataset has {} rows (exceeds u32::MAX limit of {}). \
-                     RoaringBitmap output skipped. Use RowSelection for large datasets.",
+                    "Note: Dataset has {} rows (exceeds u32::MAX limit of {}). RoaringBitmap \
+                     output skipped. Use RowSelection for large datasets.",
                     total_rows,
                     u32::MAX
                 );
@@ -277,6 +285,7 @@ impl<'a> PruneEvaluator<'a> {
         &self,
         row_group_idx: usize,
         bloom_filters: Option<HashMap<usize, Sbbf>>,
+        options: &'a PruneOptions,
     ) -> RowGroupContext<'_> {
         RowGroupContext {
             metadata: self.metadata,
@@ -284,6 +293,7 @@ impl<'a> PruneEvaluator<'a> {
             column_lookup: &self.column_lookup,
             row_group_idx,
             bloom_filters,
+            options,
         }
     }
 
@@ -292,8 +302,9 @@ impl<'a> PruneEvaluator<'a> {
         predicates: &[IrExpr],
         row_group_idx: usize,
         bloom_filters: Option<HashMap<usize, Sbbf>>,
+        options: &PruneOptions,
     ) -> TriState {
-        let ctx = self.row_group_context(row_group_idx, bloom_filters);
+        let ctx = self.row_group_context(row_group_idx, bloom_filters, options);
         eval::eval_conjunction(predicates, &ctx)
     }
 
@@ -301,8 +312,9 @@ impl<'a> PruneEvaluator<'a> {
         &self,
         predicates: &[IrExpr],
         row_group_idx: usize,
+        options: &PruneOptions,
     ) -> Option<RowSelection> {
-        let ctx = self.row_group_context(row_group_idx, None);
+        let ctx = self.row_group_context(row_group_idx, None, options);
         eval::page_selection_for_predicates(predicates, &ctx)
     }
 }

@@ -2,14 +2,13 @@
 
 use arrow_schema::DataType;
 use datafusion_common::ScalarValue;
-use parquet::arrow::arrow_reader::RowSelection;
-use parquet::file::page_index::column_index::{ColumnIndexIterators, ColumnIndexMetaData};
+use parquet::{
+    arrow::arrow_reader::RowSelection,
+    file::page_index::column_index::{ColumnIndexIterators, ColumnIndexMetaData},
+};
 
+use super::{context::RowGroupContext, page, page::PagePruning, stats};
 use crate::ir::{CmpOp, TriState};
-
-use super::context::RowGroupContext;
-use super::{page, stats};
-use super::page::PagePruning;
 
 pub(super) fn eval_cmp(
     column: &str,
@@ -134,6 +133,15 @@ pub(super) fn page_selection_for_cmp(
     let column_index = ctx.metadata.column_index()?;
     let offset_index = ctx.metadata.offset_index()?;
     let col_index_meta = column_index.get(ctx.row_group_idx)?.get(col_idx)?;
+    if matches!(
+        col_index_meta,
+        ColumnIndexMetaData::BYTE_ARRAY(_) | ColumnIndexMetaData::FIXED_LEN_BYTE_ARRAY(_)
+    ) {
+        let stats = row_group.column(col_idx).statistics()?;
+        if !stats::byte_array_ordering_supported(stats, ctx, col_idx) {
+            return None;
+        }
+    }
     let offset_meta = offset_index.get(ctx.row_group_idx)?.get(col_idx)?;
     let page_ranges = page::build_page_ranges(offset_meta, row_group.num_rows() as usize)?;
     let states = page_predicate_states(
@@ -168,13 +176,7 @@ fn eval_cmp_stats_page(
     null_count: Option<i64>,
     nullable: bool,
 ) -> TriState {
-    let nulls = null_count.and_then(|count| {
-        if count >= 0 {
-            Some(count as u64)
-        } else {
-            None
-        }
-    });
+    let nulls = null_count.and_then(|count| if count >= 0 { Some(count as u64) } else { None });
     let tri = eval_cmp_stats(op, value, min, max, nulls, 0);
     if tri == TriState::True && nulls.is_none() && nullable {
         TriState::Unknown

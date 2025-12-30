@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use aisle::PruneRequest;
-use arrow_array::{ArrayRef, Int32Array, ListArray, MapArray, RecordBatch, StringArray, StructArray};
+use arrow_array::{
+    ArrayRef, Int32Array, ListArray, MapArray, RecordBatch, StringArray, StructArray,
+};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use datafusion_expr::{col, lit};
@@ -106,17 +108,33 @@ fn prunes_row_groups_with_list_column_coerced_names() {
     let batch1 = {
         let values = Int32Array::from(vec![1, 2, 3, 4, 5]);
         let offsets = arrow_buffer::OffsetBuffer::new(vec![0, 5].into());
-        let list_array =
-            ListArray::new(Arc::new(Field::new("item", DataType::Int32, false)), offsets, Arc::new(values), None);
-        RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(list_array) as ArrayRef]).unwrap()
+        let list_array = ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            offsets,
+            Arc::new(values),
+            None,
+        );
+        RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(list_array) as ArrayRef],
+        )
+        .unwrap()
     };
 
     let batch2 = {
         let values = Int32Array::from(vec![10, 11, 12, 13, 14]);
         let offsets = arrow_buffer::OffsetBuffer::new(vec![0, 5].into());
-        let list_array =
-            ListArray::new(Arc::new(Field::new("item", DataType::Int32, false)), offsets, Arc::new(values), None);
-        RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(list_array) as ArrayRef]).unwrap()
+        let list_array = ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            offsets,
+            Arc::new(values),
+            None,
+        );
+        RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(list_array) as ArrayRef],
+        )
+        .unwrap()
     };
 
     let props = WriterProperties::builder()
@@ -311,7 +329,11 @@ fn prunes_row_groups_with_map_column_coerced_names() {
             None,
             false,
         );
-        RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(map_array) as ArrayRef]).unwrap()
+        RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(map_array) as ArrayRef],
+        )
+        .unwrap()
     };
 
     let batch2 = {
@@ -345,7 +367,11 @@ fn prunes_row_groups_with_map_column_coerced_names() {
             None,
             false,
         );
-        RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(map_array) as ArrayRef]).unwrap()
+        RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(map_array) as ArrayRef],
+        )
+        .unwrap()
     };
 
     let props = WriterProperties::builder()
@@ -484,7 +510,7 @@ fn prunes_row_groups_with_list_of_structs() {
 fn test_list_custom_element_name_shows_bug() {
     // This test demonstrates the bug: element field name mismatch
     use std::sync::Arc;
-    
+
     let schema = Schema::new(vec![Field::new(
         "my_list",
         DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
@@ -526,6 +552,6 @@ fn test_list_custom_element_name_shows_bug() {
         .emit_roaring(false)
         .prune();
     println!("Row groups kept: {:?}", result.row_groups());
-    
+
     // Bug: If Parquet uses "item", this should work but won't
 }

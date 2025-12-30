@@ -1,7 +1,7 @@
 # Aisle Development Plan
 
 ## Purpose
-Track implementation status of metadata-based filter pushdown: DataFusion `Expr` → pruning IR → row-group/page pruning → `RowSelection` + Roaring bitmap.
+Track implementation status of metadata-based filter pushdown: DataFusion `Expr` -> pruning IR -> row-group/page pruning -> `RowSelection` + Roaring bitmap.
 
 ## Current Status
 
@@ -25,7 +25,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ Internal `concat_selections` for row-group alignment
 - ⏳ Stable serialization format for `PruneResult` (post-v1.0, optional)
 
-### Compiler (Expr → IR) ✅
+### Compiler (Expr -> IR) ✅
 - ✅ CAST and TRY_CAST support (no-op column casts, compile-time literal casts)
 - ✅ LIKE 'prefix%' compiled to StartsWith
 - ✅ Non-literal arguments rejected with clear errors
@@ -87,7 +87,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 ## Design Constraints
 
 - **Safety first**: UNKNOWN => keep (never prune a possible match)
-- **Page-level pruning requires indexes**: Missing indexes → fall back to row-group only
+- **Page-level pruning requires indexes**: Missing indexes -> fall back to row-group only
 - **Selection alignment**: RowSelection must match included row groups only
 - **Column resolution**: Full path, qualified names, or unique leaf name
 
