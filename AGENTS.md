@@ -4,8 +4,6 @@
 
 Aisle is a Rust library that adds metadata-driven filter pushdown for Parquet reads without modifying the upstream `parquet` crate. It accepts DataFusion logical expressions, compiles them into a minimal pruning IR, evaluates that IR against Parquet metadata (row-group stats, page indexes, bloom filters), and returns row-group and row-level selections to guide the Parquet reader.
 
-**Status**: Near v1.0 release (117 tests passing, full documentation, stable API)
-
 ## Why do we need it?
 
 Parquet readers can skip IO only when they are given metadata-derived selections. Without that, filters must read predicate columns at least once before pruning. Aisle fills the gap by:
@@ -232,7 +230,7 @@ Evaluation uses three-valued logic:
 - [Parquet format spec](https://parquet.apache.org/docs/): Metadata structure
 - [DataFusion expressions](https://docs.rs/datafusion-expr): Input predicate format
 
-## Future Enhancements (Post-v1.0)
+## Future Enhancements (Post-v0.2.0)
 
 - Temporal type support (Date, Timestamp)
 - Decimal type support

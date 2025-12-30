@@ -5,14 +5,14 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 
 ## Current Status
 
-**v1.0 Release Readiness: ~95% Complete**
+**v0.2.0 Release Readiness: ~95% Complete**
 
 - ✅ Core functionality implemented and tested (117 tests passing)
 - ✅ Full API documentation (24 doc tests passing)
 - ✅ Unified builder API (`PruneRequest` with sync/async)
 - ✅ Comprehensive README and user documentation
 - ✅ Production-ready error handling and best-effort compilation
-- ⏳ Benchmarking suite (post-v1.0)
+- ⏳ Benchmarking suite (post-v0.2.0)
 
 ## Implementation Status
 
@@ -23,7 +23,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ `PruneOptions` for configuration
 - ✅ `AsyncBloomFilterProvider` trait for custom bloom filter loading
 - ✅ Internal `concat_selections` for row-group alignment
-- ⏳ Stable serialization format for `PruneResult` (post-v1.0, optional)
+- ⏳ Stable serialization format for `PruneResult` (post-v0.2.0, optional)
 
 ### Compiler (Expr -> IR) ✅
 - ✅ CAST and TRY_CAST support (no-op column casts, compile-time literal casts)
@@ -75,8 +75,8 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 
 ### 3. Performance & Practicality ⏳
 - ✅ Minimal allocations in selection construction
-- ⏳ Benchmarking suite (post-v1.0)
-- ⏳ Performance profiling (post-v1.0)
+- ⏳ Benchmarking suite (post-v0.2.0)
+- ⏳ Performance profiling (post-v0.2.0)
 
 ### 4. Ergonomics ✅
 - ✅ Unified builder API (PruneRequest)
@@ -117,11 +117,11 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - Minimal allocations in selection concatenation
 - Conservative page pruning avoids unnecessary I/O
 
-**Post-v1.0**:
+**Post-v0.2.0**:
 - Benchmark suite for pruning effectiveness
 - Profiling for optimization opportunities
 
-## Post-v1.0 Roadmap
+## Post-v0.2.0 Roadmap
 
 1. **Temporal type support** (Date32/Date64, Timestamp)
 2. **Decimal type support** (Decimal128/Decimal256)
