@@ -13,7 +13,12 @@ rust-version = "1.85"
 version = "0.2.0"
 
 [dependencies]
+arrow-arith = { version = "57.1.0", optional = true }
+arrow-array = "57.1.0"
+arrow-cast = { version = "57.1.0", optional = true }
+arrow-ord = { version = "57.1.0", optional = true }
 arrow-schema = "57.1.0"
+arrow-select = { version = "57.1.0", optional = true }
 bytes = "1.11.0"
 datafusion-common = "51.0.0"
 datafusion-expr = "51.0.0"
@@ -24,7 +29,27 @@ parquet = { version = "57.1.0", default-features = false, features = [
 roaring = "0.11.3"
 thiserror = "2.0"
 
+[features]
+default = []
+row_filter = ["arrow-arith", "arrow-cast", "arrow-ord", "arrow-select"]
+
 [dev-dependencies]
 arrow-array = "57.1.0"
 arrow-buffer = "57.1.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3.23.0"
 tokio = { version = "1.48.0", features = ["fs", "macros", "rt"] }
+
+[[bench]]
+harness = false
+name = "row_group_pruning"
+required-features = ["row_filter"]
+
+[[example]]
+name = "row_filter"
+required-features = ["row_filter"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

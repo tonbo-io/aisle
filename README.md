@@ -68,11 +68,21 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aisle = "0.1"
-datafusion-expr = "43"
+aisle = "0.2"
+datafusion-expr = "51"
 parquet = "57"
 arrow-schema = "57"
 ```
+
+### Optional Features
+
+**Row Filtering** (requires `arrow-arith`, `arrow-ord`, `arrow-select`, and `arrow-cast`):
+```toml
+[dependencies]
+aisle = { version = "0.2", features = ["row_filter"] }
+```
+
+Enables `IrRowFilter` for exact row-level filtering using Parquet's built-in `RowFilter`. Most users only need metadata pruning (default), but this feature allows using the same IR expression for both metadata pruning and exact row filtering.
 
 ## When to Use Aisle
 
@@ -143,7 +153,7 @@ arrow-schema = "57"
 │          Parquet Reader                             │
 │   .with_row_groups([2, 5, 7])                       │
 │   .with_row_selection(...)                          │
-│   I/O reduced by 70%! ⚡                             │
+│   I/O reduced! ⚡                                    │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -278,6 +288,7 @@ Run the included examples to see end-to-end usage:
 
 - **`basic_usage`**: Row-group pruning with metadata and predicates
 - **`bloom_filter`**: Async API with bloom filter support
+- **`byte_array_ordering`**: String/binary ordering awareness with exact/truncated statistics
 
 ```bash
 # Row-group pruning example
@@ -285,6 +296,9 @@ cargo run --example basic_usage
 
 # Async + bloom filters
 cargo run --example bloom_filter
+
+# Byte array ordering scenarios
+cargo run --example byte_array_ordering
 ```
 
 ## Architecture
@@ -293,6 +307,7 @@ See detailed documentation:
 - **[Architecture](docs/architecture.md)**: Internal design and IR compilation
 - **[CLAUDE.md](CLAUDE.md)**: Project overview and design philosophy
 - **[Development Plan](docs/development_plan.md)**: Implementation roadmap
+- **[Deep Dive: DataFusion Parquet vs Aisle](docs/deep_dive_datafusion_parquet_vs_aisle.md)**: Design comparison and non-goals
 
 ## Testing
 

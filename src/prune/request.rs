@@ -168,10 +168,97 @@ impl<'a> PruneRequest<'a> {
         self
     }
 
-    /// Allows ordering predicates to use truncated byte array statistics.
+    /// Allows ordering predicates to use truncated byte array statistics (default: `false`).
     ///
-    /// When disabled (default), byte array ordering relies only on exact min/max
-    /// statistics with type-defined (unsigned) column order.
+    /// # What This Controls
+    ///
+    /// When evaluating ordering predicates (`<`, `>`, `<=`, `>=`, `BETWEEN`, `LIKE 'prefix%'`)
+    /// on string/binary columns, Aisle needs to compare predicate values against min/max
+    /// statistics. These comparisons require proper ordering semantics.
+    ///
+    /// Parquet writers may **truncate** min/max statistics for byte arrays (e.g., keeping only
+    /// the first 32 bytes of long strings). Truncation can change ordering semantics:
+    /// - Truncated min might be greater than the actual min
+    /// - Truncated max might be less than the actual max
+    ///
+    /// # Default Mode (Conservative)
+    ///
+    /// When `false` (default), ordering predicates require **both**:
+    /// 1. Column has `TYPE_DEFINED_ORDER(UNSIGNED)` metadata
+    /// 2. Statistics are **exact** (not truncated)
+    ///
+    /// If either condition fails, the predicate returns `None` (keeps all row groups).
+    ///
+    /// # Aggressive Mode (Opt-in)
+    ///
+    /// When `true`, ordering predicates accept **truncated** statistics as long as:
+    /// 1. Column has `TYPE_DEFINED_ORDER(UNSIGNED)` metadata
+    ///
+    /// **Trade-off**: May produce false positives (keeping some irrelevant row groups)
+    /// if truncation changes ordering semantics for your query range.
+    ///
+    /// # Which Predicates Are Affected
+    ///
+    /// **Affected** (ordering-sensitive):
+    /// - `col.lt(...)`, `col.gt(...)`, `col.lt_eq(...)`, `col.gt_eq(...)`
+    /// - `col.between(low, high)`
+    /// - `col.like("prefix%")` (prefix matching)
+    ///
+    /// **Not affected** (always safe regardless of truncation):
+    /// - `col.eq(...)`, `col.not_eq(...)`
+    /// - `col.in_list(...)`
+    /// - `col.is_null()`, `col.is_not_null()`
+    ///
+    /// # When to Enable
+    ///
+    /// Enable aggressive mode when:
+    /// - You understand your Parquet writer's truncation behavior
+    /// - Truncated statistics still preserve meaningful ordering for your queries
+    /// - You want maximum pruning and can tolerate potential false positives
+    /// - Your files have `TYPE_DEFINED_ORDER(UNSIGNED)` but statistics are truncated
+    ///
+    /// # When to Keep Disabled (Default)
+    ///
+    /// Keep conservative mode when:
+    /// - You need guaranteed correctness (no false negatives beyond metadata uncertainty)
+    /// - Your Parquet files have exact min/max statistics (most Arrow-based writers)
+    /// - You're only using equality predicates (truncation doesn't matter)
+    /// - You're unsure about statistics truncation behavior
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use aisle::PruneRequest;
+    /// use datafusion_expr::{col, lit};
+    /// # use arrow_schema::{Schema, Field, DataType};
+    /// # use parquet::file::metadata::ParquetMetaData;
+    /// # fn example(metadata: &ParquetMetaData, schema: &Schema) {
+    ///
+    /// // Conservative (default): Only uses exact statistics
+    /// let result = PruneRequest::new(metadata, schema)
+    ///     .with_predicate(&col("name").gt(lit("M")))
+    ///     .prune();
+    /// // If statistics are truncated, keeps all row groups (safe)
+    ///
+    /// // Aggressive: Allows truncated statistics
+    /// let result = PruneRequest::new(metadata, schema)
+    ///     .with_predicate(&col("description").lt(lit("zebra")))
+    ///     .allow_truncated_byte_array_ordering(true)
+    ///     .prune();
+    /// // Uses truncated stats (may keep some false positives)
+    ///
+    /// // Equality predicates: unaffected by this setting
+    /// let result = PruneRequest::new(metadata, schema)
+    ///     .with_predicate(&col("status").eq(lit("active")))
+    ///     .prune();
+    /// // Works regardless of truncation
+    /// # }
+    /// ```
+    ///
+    /// # See Also
+    ///
+    /// - Run `cargo run --example byte_array_ordering` for comprehensive demonstrations
+    /// - Parquet spec: [Byte Array Ordering](https://parquet.apache.org/docs/)
     pub fn allow_truncated_byte_array_ordering(mut self, enable: bool) -> Self {
         self.options = self.options.allow_truncated_byte_array_ordering(enable);
         self

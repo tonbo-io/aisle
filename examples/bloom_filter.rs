@@ -9,39 +9,39 @@ use datafusion_expr::{col, lit};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Aisle: Async + Bloom Filter Pruning ===\n");
-
-    // Setup: Create Parquet with bloom filters
+    // Step 1: Create a Parquet file with bloom filters enabled
+    // Sample data structure:
+    //   Row group 0: user_id=[1,2,3]
+    //   Row group 1: user_id=[1000,1001,1002]
+    //   Row group 2: user_id=[5000,5001,5002]
     let (parquet_bytes, _schema) = helpers::create_parquet_with_bloom_filters().await?;
 
-    println!("Sample data: 3 row groups with bloom filters");
-    println!("  Row group 0: user_id=[1,2,3]");
-    println!("  Row group 1: user_id=[1000,1001,1002]");
-    println!("  Row group 2: user_id=[5000,5001,5002]\n");
-
-    // ========================================================================
-    // AISLE USAGE: Async pruning with bloom filters
-    // ========================================================================
-
+    // Step 2: Define a point query predicate
+    // This type of query (equality on high-cardinality column) benefits most from bloom filters
     let predicate = col("user_id").eq(lit(1000i64));
-    println!("Filter: user_id = 1000 (point query)\n");
 
-    // Open async Parquet reader
+    // Step 3: Open async Parquet reader
     let cursor = std::io::Cursor::new(parquet_bytes);
     let mut builder =
         parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder::new(cursor).await?;
 
-    // Prune using bloom filters with unified API
+    // Step 4: Prune using bloom filters with unified API
+    // Bloom filters provide definite ABSENCE checks:
+    //   - Row group 0: stats=[1,3]       -> Pruned by statistics
+    //   - Row group 1: stats=[1000,1002] -> Bloom filter confirms 1000 exists -> Keep
+    //   - Row group 2: stats=[5000,5002] -> Pruned by statistics
     let metadata = builder.metadata().clone();
     let schema = builder.schema().clone();
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&predicate)
         .enable_page_index(false)
-        .enable_bloom_filter(true) // Key: Enable bloom filter pruning!
+        .enable_bloom_filter(true) // Enable bloom filter pruning for point queries
         .emit_roaring(false)
         .prune_async(&mut builder)
         .await;
 
+    // Show pruning results
+    println!("Filter: user_id = 1000 (point query)\n");
     println!("Pruning result:");
     println!("  ✓ Kept row groups: {:?}", result.row_groups());
     println!(
@@ -50,29 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ((3 - result.row_groups().len()) as f64 / 3.0 * 100.0) as i32
     );
 
-    // ========================================================================
-    // Explain: How bloom filters help
-    // ========================================================================
+    // Why bloom filters matter:
+    //   • Statistics alone: Can't prove a value EXISTS within a range, only bounds
+    //   • Bloom filters: Provide definite ABSENCE checks (no false negatives)
+    //   • Best for: High-cardinality columns (user IDs, SKUs, transaction IDs)
+    //   • Ideal queries: = and IN predicates with specific values
 
-    println!("How pruning works:");
-    println!("  Row group 0: stats show range [1,3]");
-    println!("    -> Doesn't contain 1000 ✓ Pruned by statistics");
-    println!();
-    println!("  Row group 1: stats show range [1000,1002]");
-    println!("    -> Might contain 1000 (by stats)");
-    println!("    -> Bloom filter checked: value 1000 found ✓ Keep");
-    println!();
-    println!("  Row group 2: stats show range [5000,5002]");
-    println!("    -> Doesn't contain 1000 ✓ Pruned by statistics");
-    println!();
-
-    println!("Why bloom filters matter:");
-    println!("  • Statistics alone: Can't prove value EXISTS in range");
-    println!("  • Bloom filters: Provide definite ABSENCE checks");
-    println!("  • Best for: High-cardinality columns (user IDs, SKUs, transaction IDs)");
-    println!("  • Ideal queries: = and IN predicates with specific values");
-
-    println!("\n=== Example Complete ===");
     Ok(())
 }
 

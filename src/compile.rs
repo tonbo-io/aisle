@@ -122,6 +122,32 @@ impl CompileResult {
         &self.prunable
     }
 
+    /// Get the successfully compiled IR expressions
+    ///
+    /// Returns a slice of all predicates that were successfully compiled into IR.
+    /// These can be used with [`IrRowFilter`](crate::IrRowFilter) for row-level filtering.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use aisle::PruneRequest;
+    /// # use datafusion_expr::{col, lit};
+    /// # use parquet::file::metadata::ParquetMetaData;
+    /// # use arrow_schema::Schema;
+    /// # use std::sync::Arc;
+    /// # let metadata: ParquetMetaData = todo!();
+    /// # let schema: Arc<Schema> = todo!();
+    /// let predicate = col("id").eq(lit(42i64));
+    /// let result = PruneRequest::new(&metadata, &schema)
+    ///     .with_predicate(&predicate)
+    ///     .prune();
+    ///
+    /// let ir_exprs = result.compile_result().ir_exprs();
+    /// println!("Compiled {} predicates", ir_exprs.len());
+    /// ```
+    pub fn ir_exprs(&self) -> &[IrExpr] {
+        &self.prunable
+    }
+
     /// Get the compilation errors
     pub fn errors(&self) -> &[CompileError] {
         &self.errors

@@ -11,7 +11,7 @@ Parquet readers can skip IO only when they are given metadata-derived selections
 - Pruning row groups and (optionally) pages before reading data
 - Remaining non-invasive to upstream crates
 
-**Result**: 70-99% I/O reduction for selective queries without modifying the Parquet format
+**Result**: I/O reduction for selective queries without modifying the Parquet format
 
 ## How does it work?
 

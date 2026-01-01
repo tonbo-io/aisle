@@ -38,7 +38,10 @@ impl PruneOptions {
         self.enable_bloom_filter
     }
 
-    /// Check if ordering predicates can use truncated byte array stats
+    /// Check if ordering predicates can use truncated byte array statistics.
+    ///
+    /// Returns `true` if aggressive mode is enabled (allows truncated stats),
+    /// `false` for conservative mode (requires exact stats).
     pub fn allow_truncated_byte_array_ordering(&self) -> bool {
         self.allow_truncated_byte_array_ordering
     }
@@ -115,12 +118,29 @@ impl PruneOptionsBuilder {
         self
     }
 
-    /// Allow ordering predicates to use truncated BYTE_ARRAY/FIXED_LEN_BYTE_ARRAY stats (default:
-    /// false).
+    /// Allow ordering predicates to use truncated BYTE_ARRAY/FIXED_LEN_BYTE_ARRAY statistics
+    /// (default: `false`).
     ///
-    /// When disabled, byte array ordering requires type-defined (unsigned) column order
-    /// and exact min/max statistics. When enabled, truncation is allowed but column order
-    /// is still respected.
+    /// # Overview
+    ///
+    /// Controls whether ordering predicates (`<`, `>`, `BETWEEN`, `LIKE 'prefix%'`) can use
+    /// truncated min/max statistics for string/binary columns.
+    ///
+    /// **Default (`false`)**: Conservative mode - requires exact statistics +
+    /// `TYPE_DEFINED_ORDER(UNSIGNED)`
+    ///
+    /// **Enabled (`true`)**: Aggressive mode - allows truncated statistics but still requires
+    /// `TYPE_DEFINED_ORDER(UNSIGNED)`. May produce false positives (keeping extra row groups).
+    ///
+    /// # Trade-offs
+    ///
+    /// - **Conservative**: Guaranteed correctness, but may skip pruning if stats are truncated
+    /// - **Aggressive**: Maximum pruning, but may keep some irrelevant row groups
+    ///
+    /// # See Also
+    ///
+    /// See [`PruneRequest::allow_truncated_byte_array_ordering`](crate::PruneRequest::allow_truncated_byte_array_ordering)
+    /// for detailed documentation, examples, and usage guidelines.
     pub fn allow_truncated_byte_array_ordering(mut self, value: bool) -> Self {
         self.allow_truncated_byte_array_ordering = Some(value);
         self

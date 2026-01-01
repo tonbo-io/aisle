@@ -18,6 +18,21 @@
 //!
 //! **The Result:** 70-99% I/O reduction for selective queries without modifying the Parquet format.
 //!
+//! # Optional Features
+//!
+//! ## Row Filtering (`row_filter`)
+//!
+//! **Not enabled by default.** Adds support for exact row-level filtering using [`IrRowFilter`]:
+//!
+//! ```toml
+//! [dependencies]
+//! aisle = { version = "0.2", features = ["row_filter"] }
+//! ```
+//!
+//! This feature enables using the same compiled IR expression for both metadata pruning
+//! (skip row groups) and exact row filtering (filter rows within batches) via Parquet's
+//! `RowFilter` API. Requires `arrow-arith`, `arrow-ord`, `arrow-select`, and `arrow-cast`.
+//!
 //! # Quick Start
 //!
 //! ```rust,no_run
@@ -277,12 +292,17 @@ mod error;
 mod ir;
 mod prune;
 mod pruner;
+#[cfg(feature = "row_filter")]
+mod row_filter;
 mod selection;
 
-pub use compile::CompileResult;
+pub use compile::{CompileResult, compile_pruning_ir};
 pub use error::CompileError;
+pub use ir::IrExpr;
 pub use prune::{
     AsyncBloomFilterProvider, PruneOptions, PruneOptionsBuilder, PruneRequest, PruneResult,
 };
-pub use pruner::Pruner;
+pub use pruner::{CompiledPruner, Pruner};
+#[cfg(feature = "row_filter")]
+pub use row_filter::{ExprRowFilter, IrRowFilter};
 pub use selection::{roaring_to_row_selection, row_selection_to_roaring};

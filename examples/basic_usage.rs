@@ -8,31 +8,29 @@ use aisle::PruneRequest;
 use datafusion_expr::{col, lit};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Aisle: Metadata-Based Filter Pushdown ===\n");
-
-    // Setup: Create a Parquet file with 3 row groups
+    // Step 1: Create a Parquet file with 3 row groups
+    // Sample data structure:
+    //   Row group 0: id=[1,2,3],       age=[25,30,35]
+    //   Row group 1: id=[100,101,102], age=[40,45,50]
+    //   Row group 2: id=[200,201,202], age=[55,60,65]
     let (parquet_bytes, schema) = helpers::create_sample_parquet()?;
     let metadata = helpers::load_metadata(&parquet_bytes)?;
 
-    println!("Sample data: 3 row groups, 9 total rows");
-    println!("  Row group 0: id=[1,2,3],       age=[25,30,35]");
-    println!("  Row group 1: id=[100,101,102], age=[40,45,50]");
-    println!("  Row group 2: id=[200,201,202], age=[55,60,65]\n");
-
-    // ========================================================================
-    // AISLE USAGE: Prune row groups based on predicate
-    // ========================================================================
-
+    // Step 2: Define a filter predicate using DataFusion expressions
+    // This predicate will select rows where: id >= 100 AND age < 50
+    // Expected match: Only row group 1 (rows: [100,101,102] with ages [40,45,50])
     let predicate = col("id").gt_eq(lit(100i64)).and(col("age").lt(lit(50i64)));
-    println!("Filter: id >= 100 AND age < 50\n");
 
-    // Use Aisle to determine which row groups to read
+    // Step 3: Use Aisle to determine which row groups to read
+    // This is the core metadata-based pruning operation
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&predicate)
-        .enable_page_index(false) // Row-group level only
-        .enable_bloom_filter(false) // No bloom filters
+        .enable_page_index(false) // Row-group level pruning only
+        .enable_bloom_filter(false) // No bloom filters in this example
         .prune();
 
+    // Show pruning results
+    println!("Filter: id >= 100 AND age < 50\n");
     println!("Pruning result:");
     println!("  ✓ Kept row groups: {:?}", result.row_groups());
     println!(
@@ -41,14 +39,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ((3 - result.row_groups().len()) as f64 / 3.0 * 100.0) as i32
     );
 
-    // ========================================================================
-    // Apply pruning to Parquet reader
-    // ========================================================================
-
+    // Step 4: Apply pruning to Parquet reader
+    // Compare row counts with and without pruning
     let rows_without_pruning = helpers::count_rows_without_pruning(&parquet_bytes)?;
     let rows_with_pruning = helpers::read_with_pruning(&parquet_bytes, &result)?;
 
-    println!("Performance:");
+    println!("Performance comparison:");
     println!(
         "  Without pruning: {} rows from 3 row groups",
         rows_without_pruning
@@ -58,7 +54,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rows_with_pruning,
         result.row_groups().len()
     );
-    println!("\n=== Example Complete ===");
 
     Ok(())
 }

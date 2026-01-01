@@ -6,7 +6,10 @@ use parquet::{
 };
 
 use crate::{
-    compile::{SchemaPathIndex, build_schema_path_index, compile_pruning_ir_with_index},
+    CompileError,
+    compile::{
+        CompileResult, SchemaPathIndex, build_schema_path_index, compile_pruning_ir_with_index,
+    },
     prune::{
         AsyncBloomFilterProvider, PruneOptions, PruneResult, prune_compiled,
         prune_compiled_with_bloom_provider,
@@ -122,6 +125,48 @@ pub struct Pruner {
 }
 
 impl Pruner {
+    /// Compile a predicate and require full support.
+    ///
+    /// Returns an error if any part of the predicate cannot be compiled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    ///
+    /// use aisle::Pruner;
+    /// use arrow_schema::{DataType, Field, Schema};
+    /// use datafusion_expr::{col, lit};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let schema = Arc::new(Schema::new(vec![Field::new("age", DataType::Int32, false)]));
+    /// let pruner = Pruner::try_new(schema)?;
+    ///
+    /// let predicate = col("age").gt(lit(18));
+    /// let compiled = pruner.try_compile(&predicate)
+    ///     .map_err(|errors| format!("Compilation failed: {} errors", errors.len()))?;
+    ///
+    /// # /*
+    /// let metadata = load_parquet_metadata("users.parquet")?;
+    /// let result = compiled.prune(&metadata);
+    /// println!("Keep {} row groups", result.row_groups().len());
+    /// # */
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn try_compile(&self, expr: &Expr) -> Result<CompiledPruner, Vec<CompileError>> {
+        let compile = compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
+        if compile.has_errors() {
+            Err(compile.errors().to_vec())
+        } else {
+            Ok(CompiledPruner {
+                schema: self.schema.clone(),
+                options: self.options.clone(),
+                compile,
+            })
+        }
+    }
+
     /// Creates a new `Pruner` with default options.
     ///
     /// This is equivalent to `Pruner::try_with_options(schema, PruneOptions::default())`.
@@ -308,6 +353,73 @@ impl Pruner {
             metadata,
             self.schema.as_ref(),
             compile,
+            &self.options,
+            provider,
+        )
+        .await
+    }
+}
+
+/// Pre-compiled pruning plan for reuse across multiple Parquet files.
+///
+/// Use [`Pruner::try_compile`] to build this once, then call [`CompiledPruner::prune`]
+/// for each file's metadata.
+#[derive(Debug, Clone)]
+pub struct CompiledPruner {
+    schema: SchemaRef,
+    options: PruneOptions,
+    compile: CompileResult,
+}
+
+impl CompiledPruner {
+    /// Returns the compilation result for this pruner.
+    pub fn compile_result(&self) -> &CompileResult {
+        &self.compile
+    }
+
+    /// Returns a reference to the pruning options used by this pruner.
+    pub fn options(&self) -> &PruneOptions {
+        &self.options
+    }
+
+    /// Prunes Parquet metadata using the pre-compiled predicate.
+    pub fn prune(&self, metadata: &ParquetMetaData) -> PruneResult {
+        prune_compiled(
+            metadata,
+            self.schema.as_ref(),
+            self.compile.clone(),
+            &self.options,
+        )
+    }
+
+    /// Prune Parquet metadata using the pre-compiled predicate and bloom filters
+    /// from the async reader.
+    pub async fn prune_with_async_reader<T: AsyncFileReader + 'static>(
+        &self,
+        builder: &mut ParquetRecordBatchStreamBuilder<T>,
+    ) -> PruneResult {
+        let metadata = builder.metadata().clone();
+        prune_compiled_with_bloom_provider(
+            metadata.as_ref(),
+            self.schema.as_ref(),
+            self.compile.clone(),
+            &self.options,
+            builder,
+        )
+        .await
+    }
+
+    /// Prune Parquet metadata using the pre-compiled predicate and a custom
+    /// async bloom provider.
+    pub async fn prune_with_bloom_provider<P: AsyncBloomFilterProvider>(
+        &self,
+        metadata: &ParquetMetaData,
+        provider: &mut P,
+    ) -> PruneResult {
+        prune_compiled_with_bloom_provider(
+            metadata,
+            self.schema.as_ref(),
+            self.compile.clone(),
             &self.options,
             provider,
         )
