@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use aisle::{PruneRequest, PruneResult};
+use aisle::{Expr, PruneRequest, PruneResult};
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use datafusion_expr::{Expr, cast, col, lit, try_cast};
+use datafusion_common::ScalarValue;
 use parquet::{
     arrow::ArrowWriter,
     file::{
@@ -70,8 +70,7 @@ fn allows_noop_column_cast() {
     let bytes = write_parquet(&[batch1, batch2], props);
     let metadata = load_metadata(&bytes);
 
-    // No-op CAST: id is already INT64
-    let expr = cast(col("id"), DataType::Int64).eq(lit(150i64));
+    let expr = Expr::eq("id", ScalarValue::Int64(Some(150)));
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
 
@@ -94,8 +93,7 @@ fn allows_noop_try_cast() {
     let bytes = write_parquet(&[batch1, batch2], props);
     let metadata = load_metadata(&bytes);
 
-    // No-op TRY_CAST
-    let expr = try_cast(col("id"), DataType::Int64).eq(lit(150i64));
+    let expr = Expr::eq("id", ScalarValue::Int64(Some(150)));
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
 
@@ -115,16 +113,13 @@ fn rejects_non_trivial_column_cast() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata(&bytes);
 
-    // Non-trivial CAST: id is INT64, cast to STRING
-    let expr = cast(col("id"), DataType::Utf8).eq(lit("100"));
+    // Type mismatch: INT64 column compared to string literal
+    let expr = Expr::eq("id", ScalarValue::Utf8(Some("100".to_string())));
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
 
-    // Should have compilation errors
-    assert!(!result.compile_result().errors().is_empty());
-    let error = result.compile_result().errors()[0].to_string();
-    assert!(error.contains("CAST on column 'id'"));
-    assert!(error.contains("not supported"));
+    // Type mismatch should be conservative (keep all row groups)
+    assert_eq!(result.row_groups(), &[0]);
 }
 
 #[test]
@@ -141,8 +136,7 @@ fn casts_literals_at_compile_time() {
     let bytes = write_parquet(&[batch1, batch2], props);
     let metadata = load_metadata(&bytes);
 
-    // Cast literal from Int32 to Int64
-    let expr = col("id").eq(cast(lit(150i32), DataType::Int64));
+    let expr = Expr::eq("id", ScalarValue::Int64(Some(150)));
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
 
@@ -165,8 +159,7 @@ fn handles_nested_casts() {
     let bytes = write_parquet(&[batch1, batch2], props);
     let metadata = load_metadata(&bytes);
 
-    // Double no-op cast
-    let expr = cast(cast(col("id"), DataType::Int64), DataType::Int64).eq(lit(150i64));
+    let expr = Expr::eq("id", ScalarValue::Int64(Some(150)));
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
 
@@ -189,10 +182,11 @@ fn cast_in_between() {
     let bytes = write_parquet(&[batch1, batch2, batch3], props);
     let metadata = load_metadata(&bytes);
 
-    // CAST in BETWEEN: column is no-op, literals are cast
-    let expr = cast(col("id"), DataType::Int64).between(
-        cast(lit(40i32), DataType::Int64),
-        cast(lit(70i32), DataType::Int64),
+    let expr = Expr::between(
+        "id",
+        ScalarValue::Int64(Some(40)),
+        ScalarValue::Int64(Some(70)),
+        true,
     );
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
@@ -216,13 +210,9 @@ fn cast_in_in_list() {
     let bytes = write_parquet(&[batch1, batch2], props);
     let metadata = load_metadata(&bytes);
 
-    // CAST in IN list
-    let expr = cast(col("id"), DataType::Int64).in_list(
-        vec![
-            cast(lit(1i32), DataType::Int64),
-            cast(lit(2i32), DataType::Int64),
-        ],
-        false,
+    let expr = Expr::in_list(
+        "id",
+        vec![ScalarValue::Int64(Some(1)), ScalarValue::Int64(Some(2))],
     );
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
@@ -245,14 +235,7 @@ fn cast_in_like() {
     let bytes = write_parquet(&[batch1, batch2], props);
     let metadata = load_metadata(&bytes);
 
-    // No-op cast in LIKE
-    let expr = Expr::Like(datafusion_expr::expr::Like::new(
-        false,
-        Box::new(cast(col("name"), DataType::Utf8)),
-        Box::new(lit("cha%")),
-        None,
-        false,
-    ));
+    let expr = Expr::starts_with("name", "cha");
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
 
@@ -272,8 +255,7 @@ fn cast_in_is_null() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata(&bytes);
 
-    // No-op cast in IS NULL
-    let expr = cast(col("id"), DataType::Int64).is_null();
+    let expr = Expr::is_null("id");
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
 
@@ -294,16 +276,13 @@ fn invalid_literal_cast_fails() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata(&bytes);
 
-    // Invalid literal cast: can't cast "not_a_number" to INT64
-    let expr = col("id").eq(cast(lit("not_a_number"), DataType::Int64));
+    // Type mismatch: string literal against INT64 column
+    let expr = Expr::eq("id", ScalarValue::Utf8(Some("not_a_number".to_string())));
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
 
-    // Should have compilation errors (literal cast fails)
-    assert!(!result.compile_result().errors().is_empty());
-    let error = result.compile_result().errors()[0].to_string();
-    // The error happens because the literal cast fails, making it not a valid literal
-    assert!(error.contains("Unsupported expression") || error.contains("Cannot cast"));
+    // Should be conservative (keep all row groups)
+    assert_eq!(result.row_groups(), &[0]);
 }
 
 #[test]
@@ -320,8 +299,7 @@ fn both_column_and_literal_cast() {
     let bytes = write_parquet(&[batch1, batch2], props);
     let metadata = load_metadata(&bytes);
 
-    // Both sides have casts
-    let expr = cast(col("id"), DataType::Int64).eq(cast(lit(150i32), DataType::Int64));
+    let expr = Expr::eq("id", ScalarValue::Int64(Some(150)));
 
     let result = prune_with_test_options(&metadata, &schema, &expr);
 

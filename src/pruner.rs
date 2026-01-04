@@ -1,15 +1,18 @@
 use arrow_schema::{Schema, SchemaRef};
-use datafusion_expr::Expr;
+#[cfg(feature = "datafusion")]
+use datafusion_expr::Expr as DfExpr;
 use parquet::{
     arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder},
     file::metadata::ParquetMetaData,
 };
 
+#[cfg(feature = "datafusion")]
+use crate::AisleError;
+#[cfg(feature = "datafusion")]
+use crate::compile::{SchemaPathIndex, build_schema_path_index, compile_pruning_ir_with_index};
 use crate::{
-    CompileError,
-    compile::{
-        CompileResult, SchemaPathIndex, build_schema_path_index, compile_pruning_ir_with_index,
-    },
+    AisleResult,
+    expr::Expr,
     prune::{
         AsyncBloomFilterProvider, PruneOptions, PruneResult, prune_compiled,
         prune_compiled_with_bloom_provider,
@@ -37,6 +40,8 @@ use crate::{
 /// ## Basic Usage
 ///
 /// ```
+/// # #[cfg(feature = "datafusion")]
+/// # {
 /// use std::sync::Arc;
 ///
 /// use aisle::Pruner;
@@ -66,6 +71,7 @@ use crate::{
 /// }
 /// # */
 /// # Ok(())
+/// # }
 /// # }
 /// ```
 ///
@@ -120,6 +126,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Pruner {
     schema: SchemaRef,
+    #[cfg(feature = "datafusion")]
     schema_index: SchemaPathIndex,
     options: PruneOptions,
 }
@@ -154,7 +161,8 @@ impl Pruner {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn try_compile(&self, expr: &Expr) -> Result<CompiledPruner, Vec<CompileError>> {
+    #[cfg(feature = "datafusion")]
+    pub fn try_compile(&self, expr: &DfExpr) -> Result<CompiledPruner, Vec<AisleError>> {
         let compile = compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
         if compile.has_errors() {
             Err(compile.errors().to_vec())
@@ -227,9 +235,12 @@ impl Pruner {
             return Err("Schema must have at least one field".to_string());
         }
 
+        #[cfg(feature = "datafusion")]
         let schema_index = build_schema_path_index(schema.as_ref());
+
         Ok(Self {
             schema,
+            #[cfg(feature = "datafusion")]
             schema_index,
             options,
         })
@@ -317,17 +328,27 @@ impl Pruner {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn prune(&self, metadata: &ParquetMetaData, expr: &Expr) -> PruneResult {
+    #[cfg(feature = "datafusion")]
+    pub fn prune(&self, metadata: &ParquetMetaData, expr: &DfExpr) -> PruneResult {
         let compile = compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
+        prune_compiled(metadata, self.schema.as_ref(), compile, &self.options)
+    }
+
+    /// Prune Parquet metadata using pre-built IR predicates.
+    ///
+    /// This bypasses DataFusion compilation and uses the IR as-is.
+    pub fn prune_ir(&self, metadata: &ParquetMetaData, predicates: &[Expr]) -> PruneResult {
+        let compile = AisleResult::from_ir_slice(predicates);
         prune_compiled(metadata, self.schema.as_ref(), compile, &self.options)
     }
 
     /// Prune Parquet metadata using the cached schema index and bloom filters from the async
     /// reader.
+    #[cfg(feature = "datafusion")]
     pub async fn prune_with_async_reader<T: AsyncFileReader + 'static>(
         &self,
         builder: &mut ParquetRecordBatchStreamBuilder<T>,
-        expr: &Expr,
+        expr: &DfExpr,
     ) -> PruneResult {
         let compile = compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
         let metadata = builder.metadata().clone();
@@ -341,14 +362,52 @@ impl Pruner {
         .await
     }
 
+    /// Prune Parquet metadata using pre-built IR predicates and bloom filters from the async
+    /// reader.
+    pub async fn prune_ir_with_async_reader<T: AsyncFileReader + 'static>(
+        &self,
+        builder: &mut ParquetRecordBatchStreamBuilder<T>,
+        predicates: &[Expr],
+    ) -> PruneResult {
+        let compile = AisleResult::from_ir_slice(predicates);
+        let metadata = builder.metadata().clone();
+        prune_compiled_with_bloom_provider(
+            metadata.as_ref(),
+            self.schema.as_ref(),
+            compile,
+            &self.options,
+            builder,
+        )
+        .await
+    }
+
     /// Prune Parquet metadata using the cached schema index and a custom async bloom provider.
+    #[cfg(feature = "datafusion")]
     pub async fn prune_with_bloom_provider<P: AsyncBloomFilterProvider>(
         &self,
         metadata: &ParquetMetaData,
-        expr: &Expr,
+        expr: &DfExpr,
         provider: &mut P,
     ) -> PruneResult {
         let compile = compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
+        prune_compiled_with_bloom_provider(
+            metadata,
+            self.schema.as_ref(),
+            compile,
+            &self.options,
+            provider,
+        )
+        .await
+    }
+
+    /// Prune Parquet metadata using pre-built IR predicates and a custom async bloom provider.
+    pub async fn prune_ir_with_bloom_provider<P: AsyncBloomFilterProvider>(
+        &self,
+        metadata: &ParquetMetaData,
+        predicates: &[Expr],
+        provider: &mut P,
+    ) -> PruneResult {
+        let compile = AisleResult::from_ir_slice(predicates);
         prune_compiled_with_bloom_provider(
             metadata,
             self.schema.as_ref(),
@@ -368,12 +427,12 @@ impl Pruner {
 pub struct CompiledPruner {
     schema: SchemaRef,
     options: PruneOptions,
-    compile: CompileResult,
+    compile: AisleResult,
 }
 
 impl CompiledPruner {
     /// Returns the compilation result for this pruner.
-    pub fn compile_result(&self) -> &CompileResult {
+    pub fn compile_result(&self) -> &AisleResult {
         &self.compile
     }
 

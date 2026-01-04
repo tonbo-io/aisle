@@ -4,18 +4,17 @@
 /// This benchmark shows:
 /// - Equality predicates where bloom filters eliminate row groups entirely
 /// - Comparison with row-group statistics (which can only say "maybe present")
-
 use std::sync::Arc;
 
 use aisle::PruneRequest;
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use datafusion_expr::{col, lit};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
-use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader, PageIndexPolicy};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader};
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use rand::{Rng, SeedableRng};
 
@@ -94,7 +93,11 @@ fn create_bloom_filter_test_data(
 
     // Verify bloom filters are written
     assert!(
-        metadata.row_group(0).column(0).bloom_filter_offset().is_some(),
+        metadata
+            .row_group(0)
+            .column(0)
+            .bloom_filter_offset()
+            .is_some(),
         "Bloom filters not written to file!"
     );
 
@@ -124,27 +127,40 @@ fn bench_bloom_filter_effectiveness(c: &mut Criterion) {
         .unwrap();
 
     let first_batch = reader.next().unwrap().unwrap();
-    let id_array = first_batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    let id_array = first_batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
     let actual_odd_id = id_array.value(0); // Get first ID from ODD row group
 
     let odd_predicate = col("id").eq(lit(actual_odd_id));
 
     println!("\n=== Bloom Filter Effectiveness Test ===");
-    println!("Dataset: {} row groups × {} rows = {} total",
-        row_groups, rows_per_group, row_groups * rows_per_group);
+    println!(
+        "Dataset: {} row groups × {} rows = {} total",
+        row_groups,
+        rows_per_group,
+        row_groups * rows_per_group
+    );
     println!("Data pattern: Alternating EVEN/ODD row groups");
     println!("Row-group stats: All overlap [0, 1M) - stats can't prune!\n");
 
     // Sync API (row-group stats only)
     let stats_only_result = PruneRequest::new(&metadata, &schema)
-        .with_predicate(&odd_predicate)
+        .with_df_predicate(&odd_predicate)
         .enable_page_index(false)
         .enable_bloom_filter(false)
         .prune();
 
-    println!("Query: id = {} (ODD number from row group 1)", actual_odd_id);
-    println!("  Stats only: kept {} row groups (stats overlap, can't prune)",
-        stats_only_result.row_groups().len());
+    println!(
+        "Query: id = {} (ODD number from row group 1)",
+        actual_odd_id
+    );
+    println!(
+        "  Stats only: kept {} row groups (stats overlap, can't prune)",
+        stats_only_result.row_groups().len()
+    );
 
     // Async API (bloom filter)
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -158,17 +174,22 @@ fn bench_bloom_filter_effectiveness(c: &mut Criterion) {
         let schema = builder.schema().clone();
 
         PruneRequest::new(&metadata, &schema)
-            .with_predicate(&odd_predicate)
+            .with_df_predicate(&odd_predicate)
             .enable_page_index(false)
             .enable_bloom_filter(true)
             .prune_async(&mut builder)
             .await
     });
 
-    println!("  Bloom filter: kept {} row groups (should eliminate EVEN row groups)",
-        bloom_result.row_groups().len());
+    println!(
+        "  Bloom filter: kept {} row groups (should eliminate EVEN row groups)",
+        bloom_result.row_groups().len()
+    );
     if bloom_result.row_groups().len() > 0 {
-        println!("    ✓ Value found in {} ODD row groups", bloom_result.row_groups().len());
+        println!(
+            "    ✓ Value found in {} ODD row groups",
+            bloom_result.row_groups().len()
+        );
     }
     println!();
 
@@ -181,13 +202,17 @@ fn bench_bloom_filter_effectiveness(c: &mut Criterion) {
         .unwrap();
 
     let first_batch = reader.next().unwrap().unwrap();
-    let id_array = first_batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    let id_array = first_batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
     let actual_even_id = id_array.value(0); // Get first ID from EVEN row group
 
     let even_predicate = col("id").eq(lit(actual_even_id));
 
     let stats_even = PruneRequest::new(&metadata, &schema)
-        .with_predicate(&even_predicate)
+        .with_df_predicate(&even_predicate)
         .enable_bloom_filter(false)
         .prune();
 
@@ -201,17 +226,29 @@ fn bench_bloom_filter_effectiveness(c: &mut Criterion) {
         let schema = builder.schema().clone();
 
         PruneRequest::new(&metadata, &schema)
-            .with_predicate(&even_predicate)
+            .with_df_predicate(&even_predicate)
             .enable_bloom_filter(true)
             .prune_async(&mut builder)
             .await
     });
 
-    println!("Query: id = {} (EVEN number from row group 0)", actual_even_id);
-    println!("  Stats only: kept {} row groups (can't prune)", stats_even.row_groups().len());
-    println!("  Bloom filter: kept {} row groups (should eliminate ODD row groups)", bloom_even.row_groups().len());
+    println!(
+        "Query: id = {} (EVEN number from row group 0)",
+        actual_even_id
+    );
+    println!(
+        "  Stats only: kept {} row groups (can't prune)",
+        stats_even.row_groups().len()
+    );
+    println!(
+        "  Bloom filter: kept {} row groups (should eliminate ODD row groups)",
+        bloom_even.row_groups().len()
+    );
     if bloom_even.row_groups().len() > 0 {
-        println!("    ✓ Value found in {} EVEN row groups", bloom_even.row_groups().len());
+        println!(
+            "    ✓ Value found in {} EVEN row groups",
+            bloom_even.row_groups().len()
+        );
     }
     println!();
 
@@ -221,7 +258,7 @@ fn bench_bloom_filter_effectiveness(c: &mut Criterion) {
     group.bench_function("stats_only", |b| {
         b.iter(|| {
             let result = PruneRequest::new(black_box(&metadata), black_box(&schema))
-                .with_predicate(black_box(&odd_predicate))
+                .with_df_predicate(black_box(&odd_predicate))
                 .enable_bloom_filter(false)
                 .prune();
             black_box(result.row_groups());
@@ -240,7 +277,7 @@ fn bench_bloom_filter_effectiveness(c: &mut Criterion) {
                 let schema = builder.schema().clone();
 
                 let result = PruneRequest::new(black_box(&metadata), black_box(&schema))
-                    .with_predicate(black_box(&odd_predicate))
+                    .with_df_predicate(black_box(&odd_predicate))
                     .enable_bloom_filter(true)
                     .prune_async(&mut builder)
                     .await;
@@ -298,10 +335,14 @@ fn bench_bloom_filter_effectiveness(c: &mut Criterion) {
         println!("\nSummary:");
         println!("  I/O Reduction: {:.1}%", io_reduction);
         println!("  Speedup: {:.2}x", speedup);
-        println!("  Row groups eliminated: {} → {} ({}% reduction)",
+        println!(
+            "  Row groups eliminated: {} → {} ({}% reduction)",
             stats_only_result.row_groups().len(),
             bloom_result.row_groups().len(),
-            (1.0 - bloom_result.row_groups().len() as f64 / stats_only_result.row_groups().len() as f64) * 100.0);
+            (1.0 - bloom_result.row_groups().len() as f64
+                / stats_only_result.row_groups().len() as f64)
+                * 100.0
+        );
     }
 }
 

@@ -22,7 +22,7 @@
 - `row_groups: Vec<usize>` — Row groups to read
 - `row_selection: Option<RowSelection>` — Row-level selection (Parquet-native)
 - `roaring_bitmap: Option<RoaringBitmap>` — Compact bitmap (optional)
-- `compile_result: CompileResult` — Compilation diagnostics
+- `compile_result: AisleResult` — Compilation diagnostics
 
 ## Architecture Overview
 
@@ -45,10 +45,10 @@ Evaluate IR against Parquet Metadata
 - **`compile`** (`src/compile.rs`)
   - Compiles DataFusion `Expr` to pruning IR
   - Best-effort: unsupported predicates logged but don't fail
-  - Returns `CompileResult` with prunable IR and errors
+  - Returns `AisleResult` with prunable IR and errors
 
-- **`ir`** (`src/ir.rs`)
-  - Pruning IR types: `IrExpr`, `CmpOp`, `TriState`
+- **`expr`** (`src/expr.rs`)
+  - Pruning IR types: `Expr`, `CmpOp`, `TriState`
   - Minimal, metadata-evaluable subset of DataFusion expressions
   - Tri-state logic for conservative evaluation
 
@@ -78,14 +78,14 @@ Evaluate IR against Parquet Metadata
   - Pre-computes column mappings for efficiency
 
 - **`error`** (`src/error.rs`)
-  - `CompileError` enum for unsupported predicates
+  - `AisleError` enum for unsupported predicates
 
 ## Pruning IR
 
 ### Supported Predicates
 
 ```rust
-pub enum IrExpr {
+pub enum Expr {
     True,
     False,
     Cmp { column: String, op: CmpOp, value: ScalarValue },
@@ -95,9 +95,9 @@ pub enum IrExpr {
     IsNull { column: String, negated: bool },
     BloomFilterEq { column: String, value: ScalarValue },
     BloomFilterInList { column: String, values: Vec<ScalarValue> },
-    And(Vec<IrExpr>),
-    Or(Vec<IrExpr>),
-    Not(Box<IrExpr>),
+    And(Vec<Expr>),
+    Or(Vec<Expr>),
+    Not(Box<Expr>),
 }
 ```
 
@@ -115,8 +115,8 @@ This ensures pruning is safe (no false negatives).
 1. **Normalize**: Simplify DataFusion `Expr`, constant fold
 2. **Split conjunctions**: Break `AND` into individual predicates
 3. **Compile to IR**: Best-effort translation
-   - Supported predicates -> `IrExpr`
-   - Unsupported predicates -> logged in `CompileResult::errors`
+   - Supported predicates -> `Expr`
+   - Unsupported predicates -> logged in `AisleResult::errors`
 4. **Type checking**: Validate column types against schema
 5. **Cast handling**:
    - **Column casts**: Only no-op casts allowed (same type)
@@ -204,7 +204,7 @@ Performed at **compile time**:
 ## Error Handling
 
 ### Compilation Errors
-- **Unsupported predicates**: Logged in `CompileResult::errors()`
+- **Unsupported predicates**: Logged in `AisleResult::errors()`
 - **Type mismatches**: Rejected with clear error messages
 - **Non-literal arguments**: Rejected (metadata can't evaluate runtime values)
 
@@ -220,7 +220,7 @@ Performed at **compile time**:
 **Sync API** (no bloom filters):
 ```rust
 let result = PruneRequest::new(&metadata, &schema)
-    .with_predicate(&predicate)
+    .with_df_predicate(&predicate)
     .enable_page_index(true)
     .prune();
 ```
@@ -230,7 +230,7 @@ let result = PruneRequest::new(&metadata, &schema)
 let metadata = builder.metadata().clone();
 let schema = builder.schema().clone();
 let result = PruneRequest::new(&metadata, &schema)
-    .with_predicate(&predicate)
+    .with_df_predicate(&predicate)
     .enable_bloom_filter(true)
     .prune_async(&mut builder).await;
 ```

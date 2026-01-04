@@ -311,7 +311,7 @@ fn bench_data_distribution(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let result = PruneRequest::new(black_box(&metadata), black_box(&schema))
-                        .with_predicate(black_box(&predicate))
+                        .with_df_predicate(black_box(&predicate))
                         .prune();
                     black_box(result.row_groups());
                 });
@@ -351,7 +351,7 @@ fn bench_predicate_types(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("aisle", name), name, |b, _| {
             b.iter(|| {
                 let result = PruneRequest::new(black_box(&metadata), black_box(&schema))
-                    .with_predicate(black_box(&predicate))
+                    .with_df_predicate(black_box(&predicate))
                     .prune();
                 black_box(result.row_groups());
             });
@@ -381,7 +381,7 @@ fn bench_selectivity(c: &mut Criterion) {
     group.bench_function("aisle_low_1pct", |b| {
         b.iter(|| {
             let result = PruneRequest::new(black_box(&metadata), black_box(&schema_clone))
-                .with_predicate(black_box(&predicate_low))
+                .with_df_predicate(black_box(&predicate_low))
                 .prune();
             black_box(result.row_groups());
         });
@@ -393,7 +393,7 @@ fn bench_selectivity(c: &mut Criterion) {
     group.bench_function("aisle_medium_30pct", |b| {
         b.iter(|| {
             let result = PruneRequest::new(black_box(&metadata), black_box(&schema_clone))
-                .with_predicate(black_box(&predicate_medium))
+                .with_df_predicate(black_box(&predicate_medium))
                 .prune();
             black_box(result.row_groups());
         });
@@ -405,7 +405,7 @@ fn bench_selectivity(c: &mut Criterion) {
     group.bench_function("aisle_high_80pct", |b| {
         b.iter(|| {
             let result = PruneRequest::new(black_box(&metadata), black_box(&schema_clone))
-                .with_predicate(black_box(&predicate_high))
+                .with_df_predicate(black_box(&predicate_high))
                 .prune();
             black_box(result.row_groups());
         });
@@ -417,7 +417,7 @@ fn bench_selectivity(c: &mut Criterion) {
     group.bench_function("aisle_worst_100pct", |b| {
         b.iter(|| {
             let result = PruneRequest::new(black_box(&metadata), black_box(&schema_clone))
-                .with_predicate(black_box(&predicate_worst))
+                .with_df_predicate(black_box(&predicate_worst))
                 .prune();
             black_box(result.row_groups());
         });
@@ -451,7 +451,7 @@ fn bench_page_index(c: &mut Criterion) {
 
     // VALIDATION: Ensure page-level pruning actually works
     let test_result = PruneRequest::new(&metadata, &schema)
-        .with_predicate(&predicate)
+        .with_df_predicate(&predicate)
         .enable_page_index(true)
         .prune();
     assert!(
@@ -464,7 +464,7 @@ fn bench_page_index(c: &mut Criterion) {
     group.bench_function("without_page_index", |b| {
         b.iter(|| {
             let result = PruneRequest::new(black_box(&metadata), black_box(&schema))
-                .with_predicate(black_box(&predicate))
+                .with_df_predicate(black_box(&predicate))
                 .enable_page_index(false)
                 .prune();
             black_box(result.row_groups());
@@ -474,7 +474,7 @@ fn bench_page_index(c: &mut Criterion) {
     group.bench_function("with_page_index", |b| {
         b.iter(|| {
             let result = PruneRequest::new(black_box(&metadata), black_box(&schema))
-                .with_predicate(black_box(&predicate))
+                .with_df_predicate(black_box(&predicate))
                 .enable_page_index(true)
                 .prune();
             black_box(result.row_selection());
@@ -506,7 +506,7 @@ fn bench_scaling(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let result = PruneRequest::new(black_box(&metadata), black_box(&schema_clone))
-                        .with_predicate(black_box(&predicate))
+                        .with_df_predicate(black_box(&predicate))
                         .prune();
                     black_box(result.row_groups());
                 });

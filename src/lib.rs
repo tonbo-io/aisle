@@ -20,22 +20,45 @@
 //!
 //! # Optional Features
 //!
-//! ## Row Filtering (`row_filter`)
+//! ## DataFusion Integration (`datafusion`)
 //!
-//! **Not enabled by default.** Adds support for exact row-level filtering using [`IrRowFilter`]:
+//! Optional: adds support for compiling DataFusion logical expressions into pruning IR,
+//! along with helper APIs like [`compile_pruning_ir`] and [`CompilePruningIr`].
+//! Disable this feature for IR-only usage.
+//!
+//! ## Row Filtering
+//!
+//! **Not enabled by default.** Two features for row-level filtering:
+//!
+//! ### `row_filter` - IR-based filtering (minimal dependencies)
+//!
+//! Adds [`RowFilter`] for filtering with Aisle's IR expressions:
 //!
 //! ```toml
 //! [dependencies]
 //! aisle = { version = "0.2", features = ["row_filter"] }
 //! ```
 //!
-//! This feature enables using the same compiled IR expression for both metadata pruning
-//! (skip row groups) and exact row filtering (filter rows within batches) via Parquet's
-//! `RowFilter` API. Requires `arrow-arith`, `arrow-ord`, `arrow-select`, and `arrow-cast`.
+//! Uses compiled IR for both metadata pruning and exact row filtering.
+//! Requires `arrow-arith`, `arrow-ord`, `arrow-select`, and `arrow-cast` only.
+//!
+//! ### `row_filter_expr` - DataFusion expression filtering
+//!
+//! Adds [`ExprRowFilter`] for filtering with DataFusion expressions:
+//!
+//! ```toml
+//! [dependencies]
+//! aisle = { version = "0.2", features = ["row_filter_expr"] }
+//! ```
+//!
+//! Enables both [`RowFilter`] and [`ExprRowFilter`]. The latter evaluates full
+//! DataFusion expressions for exact filtering. Requires `datafusion-expr` dependency.
 //!
 //! # Quick Start
 //!
 //! ```rust,no_run
+//! # #[cfg(feature = "datafusion")]
+//! # {
 //! use std::sync::Arc;
 //!
 //! use aisle::PruneRequest;
@@ -63,7 +86,7 @@
 //!
 //! // 3. Prune row groups using metadata
 //! let result = PruneRequest::new(&metadata, &schema)
-//!     .with_predicate(&predicate)
+//!     .with_df_predicate(&predicate)
 //!     .enable_page_index(false) // Row-group level only
 //!     .enable_bloom_filter(false) // No bloom filters
 //!     .prune();
@@ -86,6 +109,7 @@
 //! }
 //! # Ok(())
 //! # }
+//! # }
 //! ```
 //!
 //! # Key Features
@@ -106,6 +130,8 @@
 //! Use [`PruneRequest`] for the builder-style API:
 //!
 //! ```rust,no_run
+//! # #[cfg(feature = "datafusion")]
+//! # {
 //! # use aisle::PruneRequest;
 //! # use datafusion_expr::{col, lit};
 //! # use parquet::file::metadata::ParquetMetaData;
@@ -113,12 +139,32 @@
 //! # use std::sync::Arc;
 //! # fn example(metadata: &ParquetMetaData, schema: &Arc<Schema>) {
 //! let result = PruneRequest::new(metadata, schema)
-//!     .with_predicate(&col("id").gt(lit(100i64)))
+//!     .with_df_predicate(&col("id").gt(lit(100i64)))
 //!     .enable_page_index(true)
 //!     .prune();
 //!
 //! let kept_row_groups = result.row_groups();
 //! let page_selection = result.row_selection();
+//! # }
+//! # }
+//! ```
+//!
+//! ## Synchronous API (IR-Only)
+//!
+//! You can also build predicates directly using [`Expr`] without
+//! DataFusion expressions:
+//!
+//! ```rust,no_run
+//! # use aisle::{CmpOp, Expr, PruneRequest};
+//! # use datafusion_common::ScalarValue;
+//! # use parquet::file::metadata::ParquetMetaData;
+//! # use arrow_schema::Schema;
+//! # use std::sync::Arc;
+//! # fn example(metadata: &ParquetMetaData, schema: &Arc<Schema>) {
+//! let ir = Expr::gt("age", ScalarValue::Int32(Some(18)));
+//! let result = PruneRequest::new(metadata, schema)
+//!     .with_predicate(&ir)
+//!     .prune();
 //! # }
 //! ```
 //!
@@ -127,6 +173,8 @@
 //! Use [`PruneRequest::prune_async()`] for async pruning with bloom filter support:
 //!
 //! ```rust,ignore
+//! # #[cfg(feature = "datafusion")]
+//! # {
 //! use aisle::PruneRequest;
 //! use datafusion_expr::{col, lit};
 //! use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
@@ -139,13 +187,14 @@
 //! let predicate = col("user_id").eq(lit(12345i64));
 //!
 //! let result = PruneRequest::new(builder.metadata(), builder.schema())
-//!     .with_predicate(&predicate)
+//!     .with_df_predicate(&predicate)
 //!     .enable_bloom_filter(true)  // Check bloom filters
 //!     .enable_page_index(true)
 //!     .prune_async(&mut builder).await;
 //!
 //! println!("Kept {} row groups", result.row_groups().len());
 //! # Ok(())
+//! # }
 //! # }
 //! ```
 //!
@@ -187,7 +236,7 @@
 //! | **Logical NOT** | `a.not()` | ✓ | ✓ (exact only) | ✗ |
 //! | **Type casting** | `cast(col("x"), DataType::Int64)` | ✓ (no-op only) | ✓ | ✓ |
 //!
-//! Unsupported predicates are logged in [`CompileResult::errors()`] but don't prevent pruning
+//! Unsupported predicates are logged in [`AisleResult::errors()`] but don't prevent pruning
 //! with supported parts.
 //!
 //! # Page-Level Pruning
@@ -195,6 +244,8 @@
 //! Enable page indexes for finer-grained pruning within row groups:
 //!
 //! ```rust,no_run
+//! # #[cfg(feature = "datafusion")]
+//! # {
 //! # use aisle::PruneRequest;
 //! # use datafusion_expr::{col, lit};
 //! # use parquet::file::metadata::ParquetMetaData;
@@ -202,7 +253,7 @@
 //! # use std::sync::Arc;
 //! # fn example(metadata: &ParquetMetaData, schema: &Arc<Schema>) -> Result<(), Box<dyn std::error::Error>> {
 //! let result = PruneRequest::new(metadata, schema)
-//!     .with_predicate(&col("id").gt(lit(100i64)))
+//!     .with_df_predicate(&col("id").gt(lit(100i64)))
 //!     .enable_page_index(true)  // Enable page-level pruning
 //!     .prune();
 //!
@@ -213,6 +264,7 @@
 //! }
 //! # Ok(())
 //! # }
+//! # }
 //! ```
 //!
 //! # Error Handling
@@ -220,6 +272,8 @@
 //! Aisle uses best-effort compilation. Unsupported predicates are logged but don't block pruning:
 //!
 //! ```rust,no_run
+//! # #[cfg(feature = "datafusion")]
+//! # {
 //! # use aisle::PruneRequest;
 //! # use datafusion_expr::{col, lit};
 //! # use parquet::file::metadata::ParquetMetaData;
@@ -227,7 +281,7 @@
 //! # use std::sync::Arc;
 //! # fn example(metadata: &ParquetMetaData, schema: &Arc<Schema>) {
 //! let result = PruneRequest::new(metadata, schema)
-//!     .with_predicate(&col("complex_expr").gt(lit(100i64)))
+//!     .with_df_predicate(&col("complex_expr").gt(lit(100i64)))
 //!     .prune();
 //!
 //! // Check compilation results
@@ -247,6 +301,7 @@
 //!     "Successfully compiled {} predicates",
 //!     compile_result.prunable_count()
 //! );
+//! # }
 //! # }
 //! ```
 //!
@@ -287,22 +342,28 @@
 //! - `basic_usage.rs`: Row-group pruning with metadata
 //! - `async_usage.rs`: Async API with bloom filters
 
+#[cfg(feature = "datafusion")]
 mod compile;
 mod error;
-mod ir;
+mod expr;
 mod prune;
 mod pruner;
+mod result;
 #[cfg(feature = "row_filter")]
 mod row_filter;
 mod selection;
 
-pub use compile::{CompileResult, compile_pruning_ir};
-pub use error::CompileError;
-pub use ir::IrExpr;
+#[cfg(feature = "datafusion")]
+pub use compile::{CompilePruningIr, compile_pruning_ir};
+pub use error::AisleError;
+pub use expr::{CmpOp, Expr};
 pub use prune::{
     AsyncBloomFilterProvider, PruneOptions, PruneOptionsBuilder, PruneRequest, PruneResult,
 };
 pub use pruner::{CompiledPruner, Pruner};
+pub use result::AisleResult;
+#[cfg(all(feature = "row_filter", feature = "datafusion"))]
+pub use row_filter::ExprRowFilter;
 #[cfg(feature = "row_filter")]
-pub use row_filter::{ExprRowFilter, IrRowFilter};
+pub use row_filter::RowFilter;
 pub use selection::{roaring_to_row_selection, row_selection_to_roaring};

@@ -26,8 +26,8 @@ It effectively reduces I/O for selective queries with zero changes to the Parque
 ## Quick Start
 
 ```rust
-use aisle::PruneRequest;
-use datafusion_expr::{col, lit};
+use aisle::{Expr, PruneRequest};
+use datafusion_common::ScalarValue;
 use parquet::file::metadata::ParquetMetaDataReader;
 use parquet::arrow::ParquetRecordBatchReaderBuilder;
 
@@ -35,9 +35,11 @@ use parquet::arrow::ParquetRecordBatchReaderBuilder;
 let metadata = ParquetMetaDataReader::new()
     .parse_and_finish(&parquet_bytes)?;
 
-// 2. Define your filter using DataFusion expressions
-let predicate = col("user_id").gt_eq(lit(1000i64))
-    .and(col("age").lt(lit(30i64)));
+// 2. Define your filter using Aisle expressions
+let predicate = Expr::and(vec![
+    Expr::gt_eq("user_id", ScalarValue::Int64(Some(1000))),
+    Expr::lt("age", ScalarValue::Int64(Some(30))),
+]);
 
 // 3. Prune row groups
 let result = PruneRequest::new(&metadata, &schema)
@@ -69,7 +71,7 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 aisle = "0.2"
-datafusion-expr = "51"
+datafusion-common = "51"
 parquet = "57"
 arrow-schema = "57"
 ```
@@ -82,7 +84,7 @@ arrow-schema = "57"
 aisle = { version = "0.2", features = ["row_filter"] }
 ```
 
-Enables `IrRowFilter` for exact row-level filtering using Parquet's built-in `RowFilter`. Most users only need metadata pruning (default), but this feature allows using the same IR expression for both metadata pruning and exact row filtering.
+Enables `RowFilter` for exact row-level filtering using Parquet's built-in `RowFilter`. Most users only need metadata pruning (default), but this feature allows using the same IR expression for both metadata pruning and exact row filtering.
 
 ## When to Use Aisle
 
@@ -109,7 +111,7 @@ Enables `IrRowFilter` for exact row-level filtering using Parquet's built-in `Ro
 - **Row-group pruning**: Skip entire row groups using min/max statistics
 - **Page-level pruning**: Skip individual pages within row groups
 - **Bloom filter support**: Definite absence checks for point queries (`=`, `IN`)
-- **DataFusion expressions**: Use familiar `col("x").eq(lit(42))` syntax
+- **Aisle expressions**: Build metadata-safe predicates with `Expr::...` (optional DataFusion compilation via `with_df_predicate` + `datafusion` feature)
 - **Conservative evaluation**: Never skips data that might match (safety first)
 - **Async-first API**: Optimized for remote storage (S3, GCS, Azure)
 - **Non-invasive**: Works with upstream `parquet` crate, no format changes
@@ -251,12 +253,12 @@ let result = PruneRequest::new(&metadata, &schema)
 ```rust
 // Conservative (default): Requires exact min/max for ordering predicates
 let result = PruneRequest::new(&metadata, &schema)
-    .with_predicate(&col("name").gt(lit("prefix")))
+    .with_predicate(&Expr::gt("name", ScalarValue::Utf8(Some("prefix".to_string()))))
     .prune();
 
 // Aggressive: Allow truncated byte array statistics (may have false negatives)
 let result = PruneRequest::new(&metadata, &schema)
-    .with_predicate(&col("name").gt(lit("prefix")))
+    .with_predicate(&Expr::gt("name", ScalarValue::Utf8(Some("prefix".to_string()))))
     .allow_truncated_byte_array_ordering(true)
     .prune();
 ```

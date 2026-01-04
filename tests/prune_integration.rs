@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use aisle::PruneRequest;
+use aisle::{Expr, PruneRequest};
 use arrow_array::{Int32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use datafusion_expr::{col, lit};
+use datafusion_common::ScalarValue;
 use parquet::{
     arrow::{ArrowWriter, arrow_reader::RowSelector},
     file::{
@@ -51,7 +51,7 @@ fn prunes_row_groups() {
     let bytes = write_parquet(&[batch1, batch2], props);
     let metadata = load_metadata(&bytes);
 
-    let expr = col("a").gt(lit(9));
+    let expr = Expr::gt("a", ScalarValue::Int32(Some(9)));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)
@@ -85,7 +85,7 @@ fn prunes_pages_with_index() {
     assert!(metadata.offset_index().is_some());
     let page_locations = metadata.offset_index().unwrap()[0][0].page_locations();
 
-    let expr = col("a").gt(lit(3));
+    let expr = Expr::gt("a", ScalarValue::Int32(Some(3)));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)

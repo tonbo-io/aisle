@@ -14,11 +14,11 @@
 
 use std::sync::Arc;
 
-use aisle::PruneRequest;
+use aisle::{Expr, PruneRequest};
 use arrow_array::{Int32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use datafusion_expr::{col, lit};
+use datafusion_common::ScalarValue;
 use parquet::{
     arrow::ArrowWriter,
     file::{
@@ -51,6 +51,10 @@ fn load_metadata(bytes: &[u8]) -> ParquetMetaData {
         .unwrap()
 }
 
+
+fn i32_val(value: i32) -> ScalarValue {
+    ScalarValue::Int32(Some(value))
+}
 fn load_metadata_without_page_index(bytes: &[u8]) -> ParquetMetaData {
     let bytes = Bytes::copy_from_slice(bytes);
     ParquetMetaDataReader::new()
@@ -76,7 +80,7 @@ fn is_null_with_zero_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").is_null();
+    let expr = Expr::is_null("a");
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -99,7 +103,7 @@ fn is_null_with_all_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").is_null();
+    let expr = Expr::is_null("a");
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -122,7 +126,7 @@ fn is_null_with_partial_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").is_null();
+    let expr = Expr::is_null("a");
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -145,7 +149,7 @@ fn is_not_null_with_zero_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").is_not_null();
+    let expr = Expr::is_not_null("a");
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -168,7 +172,7 @@ fn is_not_null_with_all_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").is_not_null();
+    let expr = Expr::is_not_null("a");
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -191,7 +195,7 @@ fn is_not_null_with_partial_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").is_not_null();
+    let expr = Expr::is_not_null("a");
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -218,7 +222,7 @@ fn eq_with_zero_nulls_matching() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").eq(lit(2));
+    let expr = Expr::eq("a", i32_val(2));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -242,7 +246,7 @@ fn eq_with_all_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").eq(lit(2));
+    let expr = Expr::eq("a", i32_val(2));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -266,7 +270,7 @@ fn eq_with_partial_nulls_in_range() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").eq(lit(2));
+    let expr = Expr::eq("a", i32_val(2));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -289,7 +293,7 @@ fn not_eq_with_zero_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").not_eq(lit(2));
+    let expr = Expr::not_eq("a", i32_val(2));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -315,7 +319,7 @@ fn not_eq_with_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").not_eq(lit(2));
+    let expr = Expr::not_eq("a", i32_val(2));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -339,7 +343,7 @@ fn lt_with_zero_nulls_can_prune() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").lt(lit(5));
+    let expr = Expr::lt("a", i32_val(5));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -362,7 +366,7 @@ fn lt_with_zero_nulls_keeps_all() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").lt(lit(5));
+    let expr = Expr::lt("a", i32_val(5));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -385,7 +389,7 @@ fn lt_with_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").lt(lit(5));
+    let expr = Expr::lt("a", i32_val(5));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -412,7 +416,7 @@ fn in_list_with_zero_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").in_list(vec![lit(2), lit(5)], false);
+    let expr = Expr::in_list("a", vec![i32_val(2), i32_val(5)]);
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -437,7 +441,7 @@ fn in_list_with_all_nulls() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").in_list(vec![lit(1), lit(2)], false);
+    let expr = Expr::in_list("a", vec![i32_val(1), i32_val(2)]);
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -470,7 +474,7 @@ fn page_level_is_null_with_mixed_pages() {
     let bytes = write_parquet(&[batch1, batch2], props);
     let metadata = load_metadata(&bytes);
 
-    let expr = col("a").is_null();
+    let expr = Expr::is_null("a");
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)
@@ -501,7 +505,7 @@ fn page_level_comparison_with_zero_null_count() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata(&bytes);
 
-    let expr = col("a").gt(lit(5));
+    let expr = Expr::gt("a", i32_val(5));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)
@@ -529,7 +533,7 @@ fn missing_stats_returns_unknown() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata_without_page_index(&bytes);
 
-    let expr = col("a").eq(lit(100));
+    let expr = Expr::eq("a", i32_val(100));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)

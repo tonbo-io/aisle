@@ -1,7 +1,7 @@
 use parquet::arrow::arrow_reader::RowSelection;
 use roaring::RoaringBitmap;
 
-use crate::{compile::CompileResult, selection::row_selection_to_roaring};
+use crate::{AisleResult, selection::row_selection_to_roaring};
 
 /// Result of metadata pruning
 #[derive(Clone, Debug)]
@@ -9,7 +9,7 @@ pub struct PruneResult {
     row_groups: Vec<usize>,
     row_selection: Option<RowSelection>,
     roaring: Option<RoaringBitmap>,
-    compile: CompileResult,
+    compile: AisleResult,
 }
 
 impl PruneResult {
@@ -29,7 +29,7 @@ impl PruneResult {
     }
 
     /// Get the compilation result (what predicates were compiled)
-    pub fn compile_result(&self) -> &CompileResult {
+    pub fn compile_result(&self) -> &AisleResult {
         &self.compile
     }
 
@@ -53,7 +53,7 @@ impl PruneResult {
         Vec<usize>,
         Option<RowSelection>,
         Option<RoaringBitmap>,
-        CompileResult,
+        AisleResult,
     ) {
         (
             self.row_groups,
@@ -69,7 +69,7 @@ impl PruneResult {
         row_groups: Vec<usize>,
         row_selection: Option<RowSelection>,
         roaring: Option<RoaringBitmap>,
-        compile: CompileResult,
+        compile: AisleResult,
     ) -> Self {
         Self {
             row_groups,

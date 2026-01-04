@@ -1,7 +1,7 @@
 use datafusion_common::ScalarValue;
 
 use super::{cmp, context::RowGroupContext, page::PagePruning, stats};
-use crate::ir::{CmpOp, TriState};
+use crate::expr::{CmpOp, TriState};
 
 pub(super) fn eval_in_list(
     column: &str,

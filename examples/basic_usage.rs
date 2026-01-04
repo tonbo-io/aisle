@@ -4,8 +4,8 @@
 /// 1. Prune row groups using metadata and predicates
 /// 2. Apply pruning results to a Parquet reader
 /// 3. Measure I/O reduction from pruning
-use aisle::PruneRequest;
-use datafusion_expr::{col, lit};
+use aisle::{Expr, PruneRequest};
+use datafusion_common::ScalarValue;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 1: Create a Parquet file with 3 row groups
@@ -16,10 +16,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (parquet_bytes, schema) = helpers::create_sample_parquet()?;
     let metadata = helpers::load_metadata(&parquet_bytes)?;
 
-    // Step 2: Define a filter predicate using DataFusion expressions
+    // Step 2: Define a filter predicate using Aisle expressions
     // This predicate will select rows where: id >= 100 AND age < 50
     // Expected match: Only row group 1 (rows: [100,101,102] with ages [40,45,50])
-    let predicate = col("id").gt_eq(lit(100i64)).and(col("age").lt(lit(50i64)));
+    let predicate = Expr::and(vec![
+        Expr::gt_eq("id", ScalarValue::Int64(Some(100))),
+        Expr::lt("age", ScalarValue::Int64(Some(50))),
+    ]);
 
     // Step 3: Use Aisle to determine which row groups to read
     // This is the core metadata-based pruning operation

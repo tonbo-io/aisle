@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use aisle::PruneRequest;
+use aisle::{Expr, PruneRequest};
 use arrow_array::{
     Int8Array, Int16Array, Int32Array, Int64Array, RecordBatch, UInt8Array, UInt16Array,
     UInt32Array, UInt64Array,
@@ -8,7 +8,6 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use datafusion_common::ScalarValue;
-use datafusion_expr::{col, lit};
 use parquet::{
     arrow::ArrowWriter,
     file::{
@@ -112,7 +111,7 @@ fn row_group_prunes_int_families() {
         let bytes = write_parquet(&[batch], props);
         let metadata = load_metadata_without_page_index(&bytes);
 
-        let prune_expr = col("a").gt(lit(scalar_for_type(&data_type, 10)));
+        let prune_expr = Expr::gt("a", scalar_for_type(&data_type, 10));
         let pruned = PruneRequest::new(&metadata, &schema)
             .with_predicate(&prune_expr)
             .enable_page_index(false)
@@ -123,7 +122,7 @@ fn row_group_prunes_int_families() {
             "expected prune for {data_type:?}"
         );
 
-        let keep_expr = col("a").eq(lit(scalar_for_type(&data_type, 2)));
+        let keep_expr = Expr::eq("a", scalar_for_type(&data_type, 2));
         let kept = PruneRequest::new(&metadata, &schema)
             .with_predicate(&keep_expr)
             .enable_page_index(false)
@@ -148,7 +147,7 @@ fn page_level_prunes_int8() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata(&bytes);
 
-    let expr = col("a").gt(lit(scalar_for_type(&data_type, 50)));
+    let expr = Expr::gt("a", scalar_for_type(&data_type, 50));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)

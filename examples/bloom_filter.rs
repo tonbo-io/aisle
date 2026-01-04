@@ -4,8 +4,8 @@
 /// 1. Async Parquet reading with bloom filters
 /// 2. Using bloom filters for point queries (= and IN predicates)
 /// 3. Combining statistics + bloom filters for aggressive pruning
-use aisle::PruneRequest;
-use datafusion_expr::{col, lit};
+use aisle::{Expr, PruneRequest};
+use datafusion_common::ScalarValue;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,7 +18,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 2: Define a point query predicate
     // This type of query (equality on high-cardinality column) benefits most from bloom filters
-    let predicate = col("user_id").eq(lit(1000i64));
+    // Note: Bloom filters are added automatically during compilation for Eq/InList predicates
+    let predicate = Expr::eq("user_id", ScalarValue::Int64(Some(1000)));
 
     // Step 3: Open async Parquet reader
     let cursor = std::io::Cursor::new(parquet_bytes);

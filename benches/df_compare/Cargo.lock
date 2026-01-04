@@ -35,9 +35,12 @@ dependencies = [
 name = "aisle"
 version = "0.2.0"
 dependencies = [
- "arrow",
+ "arrow-arith",
  "arrow-array",
+ "arrow-cast",
+ "arrow-ord",
  "arrow-schema",
+ "arrow-select",
  "bytes",
  "datafusion-common",
  "datafusion-expr",

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use aisle::PruneRequest;
+use aisle::{Expr, PruneRequest};
 use arrow_array::{ArrayRef, Int32Array, RecordBatch, StructArray};
 use arrow_schema::{DataType, Field, Fields, Schema};
 use bytes::Bytes;
-use datafusion_expr::{col, lit};
+use datafusion_common::ScalarValue;
 use parquet::{
     arrow::ArrowWriter,
     file::{
@@ -58,7 +58,7 @@ fn prunes_row_groups_with_nested_column() {
     let bytes = write_parquet(&[batch1, batch2], props);
     let metadata = load_metadata(&bytes);
 
-    let expr = col("a.b").gt(lit(9));
+    let expr = Expr::gt("a.b", ScalarValue::Int32(Some(9)));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -87,7 +87,7 @@ fn prunes_pages_with_nested_column_index() {
     assert!(metadata.offset_index().is_some());
     let page_locations = metadata.offset_index().unwrap()[0][0].page_locations();
 
-    let expr = col("a.b").gt(lit(3));
+    let expr = Expr::gt("a.b", ScalarValue::Int32(Some(3)));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)

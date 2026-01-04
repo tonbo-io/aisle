@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-aisle = { path = "../.." }
+aisle = { path = "../..", features = ["datafusion"] }
 arrow-array = "57.1.0"
 arrow-schema = "57.1.0"
 bytes = "1.11.0"

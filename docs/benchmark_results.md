@@ -233,7 +233,6 @@ for file in files {
     // Step 2: Read only relevant row groups with exact filtering
     let expr_filter = ExprRowFilter::new(
         predicate.clone(),
-        schema.clone(),
         metadata.file_metadata().schema_descr(),
     );
 

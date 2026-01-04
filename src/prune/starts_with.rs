@@ -1,5 +1,5 @@
 use super::{cmp, context::RowGroupContext, page::PagePruning, stats, strings};
-use crate::ir::{CmpOp, TriState};
+use crate::expr::{CmpOp, TriState};
 
 pub(super) fn eval_starts_with(column: &str, prefix: &str, ctx: &RowGroupContext<'_>) -> TriState {
     if prefix.is_empty() {

@@ -1,5 +1,5 @@
 use super::{context::RowGroupContext, page, page::PagePruning};
-use crate::ir::TriState;
+use crate::expr::TriState;
 
 pub(super) fn eval_is_null(column: &str, negated: bool, ctx: &RowGroupContext<'_>) -> TriState {
     let row_group = ctx.metadata.row_group(ctx.row_group_idx);

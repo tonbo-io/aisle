@@ -89,7 +89,7 @@ fn bench_scalability(c: &mut Criterion) {
                     .and(col("value").lt(lit(5000i64)));
                 b.iter(|| {
                     PruneRequest::new(black_box(&metadata), black_box(&schema))
-                        .with_predicate(black_box(&predicate))
+                        .with_df_predicate(black_box(&predicate))
                         .enable_page_index(false)
                         .enable_bloom_filter(false)
                         .prune()
@@ -135,7 +135,6 @@ fn bench_baseline_comparison(c: &mut Criterion) {
                     // Use ExprRowFilter for exact filtering (same as Aisle)
                     let expr_row_filter = ExprRowFilter::new(
                         predicate.clone(),
-                        schema.clone(),
                         metadata.file_metadata().schema_descr(),
                     );
 
@@ -179,7 +178,6 @@ fn bench_baseline_comparison(c: &mut Criterion) {
                     // Step 2: Create ExprRowFilter for exact filtering (full expression)
                     let expr_row_filter = ExprRowFilter::new(
                         predicate.clone(),
-                        schema.clone(),
                         metadata.file_metadata().schema_descr(),
                     );
 

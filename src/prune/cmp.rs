@@ -8,7 +8,7 @@ use parquet::{
 };
 
 use super::{context::RowGroupContext, page, page::PagePruning, stats};
-use crate::ir::{CmpOp, TriState};
+use crate::expr::{CmpOp, TriState};
 
 pub(super) fn eval_cmp(
     column: &str,

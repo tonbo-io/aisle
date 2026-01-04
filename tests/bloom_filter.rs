@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use aisle::PruneRequest;
+use aisle::{Expr, PruneRequest};
 use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use datafusion_expr::{col, lit};
+use datafusion_common::ScalarValue;
 use parquet::{
     arrow::{ArrowWriter, ParquetRecordBatchStreamBuilder},
     file::properties::{EnabledStatistics, WriterProperties},
@@ -50,7 +50,13 @@ async fn prunes_row_groups_with_bloom_filter_eq() {
     let file = tokio::fs::File::open(&path).await.unwrap();
     let mut builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
 
-    let expr = col("s").eq(lit("foo"));
+    // This test specifically tests bloom filter pruning, so we construct
+    // the bloom filter variant directly (internal test)
+    let value = ScalarValue::Utf8(Some("foo".to_string()));
+    let expr = Expr::BloomFilterEq {
+        column: "s".to_string(),
+        value,
+    };
 
     let metadata = builder.metadata().clone();
     let schema = builder.schema().clone();

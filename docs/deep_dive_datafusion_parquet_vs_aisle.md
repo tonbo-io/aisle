@@ -42,7 +42,7 @@ Aisle is a standalone library that focuses on correctness and explicit metadata 
 - **Row-group pruning + optional page pruning**, based on Parquet metadata only.
 - **Bloom filters** integrated into IR when equality/IN are present.
 - **Column order + min/max exactness checks** for byte-array ordering predicates.
-- Optional **row-level filtering** via `IrRowFilter` when the `row_filter` feature is enabled.
+- Optional **row-level filtering** via `RowFilter` when the `row_filter` feature is enabled.
 
 ## Why Direct Comparisons Are Often Unfair
 

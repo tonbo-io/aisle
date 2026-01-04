@@ -1,14 +1,25 @@
 use arrow_schema::Schema;
-use datafusion_expr::Expr;
+#[cfg(feature = "datafusion")]
+use datafusion_expr::Expr as DfExpr;
 use parquet::file::metadata::ParquetMetaData;
 
 use super::{
-    api::{prune_compiled_with_bloom, prune_compiled_with_bloom_provider},
+    api::{prune_compiled, prune_compiled_with_bloom_provider},
     options::{PruneOptions, PruneOptionsBuilder},
     provider::AsyncBloomFilterProvider,
     result::PruneResult,
 };
-use crate::compile::{CompileResult, compile_pruning_ir};
+use crate::AisleResult;
+#[cfg(feature = "datafusion")]
+use crate::compile::compile_pruning_ir;
+use crate::expr::Expr;
+
+#[derive(Debug)]
+enum PredicateRef<'a> {
+    #[cfg(feature = "datafusion")]
+    Expr(&'a DfExpr),
+    Ir(&'a [Expr]),
+}
 
 /// Builder for one-shot metadata pruning operations.
 ///
@@ -18,6 +29,8 @@ use crate::compile::{CompileResult, compile_pruning_ir};
 /// # Examples
 ///
 /// ```no_run
+/// # #[cfg(feature = "datafusion")]
+/// # {
 /// use aisle::PruneRequest;
 /// use arrow_schema::{DataType, Field, Schema};
 /// use datafusion_expr::{col, lit};
@@ -29,7 +42,7 @@ use crate::compile::{CompileResult, compile_pruning_ir};
 /// let expr = col("age").gt(lit(18));
 ///
 /// let result = PruneRequest::new(&metadata, &schema)
-///     .with_predicate(&expr)
+///     .with_df_predicate(&expr)
 ///     .enable_bloom_filter(true)
 ///     .enable_page_index(false)
 ///     .prune();
@@ -37,12 +50,13 @@ use crate::compile::{CompileResult, compile_pruning_ir};
 /// println!("Keep {} row groups", result.row_groups().len());
 /// # Ok(())
 /// # }
+/// # }
 /// ```
 #[derive(Debug)]
 pub struct PruneRequest<'a> {
     metadata: &'a ParquetMetaData,
     schema: &'a Schema,
-    expr: Option<&'a Expr>,
+    predicate: Option<PredicateRef<'a>>,
     options: PruneOptionsBuilder,
 }
 
@@ -67,7 +81,7 @@ impl<'a> PruneRequest<'a> {
         Self {
             metadata,
             schema,
-            expr: None,
+            predicate: None,
             options: PruneOptions::builder(),
         }
     }
@@ -77,6 +91,8 @@ impl<'a> PruneRequest<'a> {
     /// # Examples
     ///
     /// ```no_run
+    /// # #[cfg(feature = "datafusion")]
+    /// # {
     /// use aisle::PruneRequest;
     /// use arrow_schema::{DataType, Field, Schema};
     /// use datafusion_expr::{col, lit};
@@ -87,12 +103,48 @@ impl<'a> PruneRequest<'a> {
     /// # let metadata: ParquetMetaData = todo!();
     /// let expr = col("age").gt(lit(18));
     ///
-    /// let request = PruneRequest::new(&metadata, &schema).with_predicate(&expr);
+    /// let request = PruneRequest::new(&metadata, &schema).with_df_predicate(&expr);
+    /// # Ok(())
+    /// # }
+    /// # }
+    /// ```
+    #[cfg(feature = "datafusion")]
+    pub fn with_df_predicate(mut self, expr: &'a DfExpr) -> Self {
+        self.predicate = Some(PredicateRef::Expr(expr));
+        self
+    }
+
+    /// Sets the filter predicate using a pre-built IR expression.
+    ///
+    /// This bypasses DataFusion compilation and uses the IR as-is.
+    /// No schema validation is performed; invalid columns or types
+    /// will be treated conservatively during pruning.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use aisle::{CmpOp, Expr, PruneRequest};
+    /// use datafusion_common::ScalarValue;
+    /// use parquet::file::metadata::ParquetMetaData;
+    /// use arrow_schema::{Field, Schema};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let schema = Schema::new(Vec::<Field>::new());
+    /// # let metadata: ParquetMetaData = todo!();
+    /// let ir = Expr::Cmp {
+    ///     column: "age".to_string(),
+    ///     op: CmpOp::Gt,
+    ///     value: ScalarValue::Int32(Some(18)),
+    /// };
+    ///
+    /// let result = PruneRequest::new(&metadata, &schema)
+    ///     .with_predicate(&ir)
+    ///     .prune();
     /// # Ok(())
     /// # }
     /// ```
     pub fn with_predicate(mut self, expr: &'a Expr) -> Self {
-        self.expr = Some(expr);
+        self.predicate = Some(PredicateRef::Ir(std::slice::from_ref(expr)));
         self
     }
 
@@ -228,6 +280,8 @@ impl<'a> PruneRequest<'a> {
     /// # Examples
     ///
     /// ```rust
+    /// # #[cfg(feature = "datafusion")]
+    /// # {
     /// use aisle::PruneRequest;
     /// use datafusion_expr::{col, lit};
     /// # use arrow_schema::{Schema, Field, DataType};
@@ -236,22 +290,23 @@ impl<'a> PruneRequest<'a> {
     ///
     /// // Conservative (default): Only uses exact statistics
     /// let result = PruneRequest::new(metadata, schema)
-    ///     .with_predicate(&col("name").gt(lit("M")))
+    ///     .with_df_predicate(&col("name").gt(lit("M")))
     ///     .prune();
     /// // If statistics are truncated, keeps all row groups (safe)
     ///
     /// // Aggressive: Allows truncated statistics
     /// let result = PruneRequest::new(metadata, schema)
-    ///     .with_predicate(&col("description").lt(lit("zebra")))
+    ///     .with_df_predicate(&col("description").lt(lit("zebra")))
     ///     .allow_truncated_byte_array_ordering(true)
     ///     .prune();
     /// // Uses truncated stats (may keep some false positives)
     ///
     /// // Equality predicates: unaffected by this setting
     /// let result = PruneRequest::new(metadata, schema)
-    ///     .with_predicate(&col("status").eq(lit("active")))
+    ///     .with_df_predicate(&col("status").eq(lit("active")))
     ///     .prune();
     /// // Works regardless of truncation
+    /// # }
     /// # }
     /// ```
     ///
@@ -271,6 +326,8 @@ impl<'a> PruneRequest<'a> {
     /// # Examples
     ///
     /// ```no_run
+    /// # #[cfg(feature = "datafusion")]
+    /// # {
     /// use aisle::PruneRequest;
     /// use arrow_schema::{DataType, Field, Schema};
     /// use datafusion_expr::{col, lit};
@@ -282,7 +339,7 @@ impl<'a> PruneRequest<'a> {
     /// let expr = col("age").gt(lit(18));
     ///
     /// let result = PruneRequest::new(&metadata, &schema)
-    ///     .with_predicate(&expr)
+    ///     .with_df_predicate(&expr)
     ///     .prune();
     ///
     /// println!(
@@ -292,16 +349,25 @@ impl<'a> PruneRequest<'a> {
     /// );
     /// # Ok(())
     /// # }
+    /// # }
     /// ```
     pub fn prune(self) -> PruneResult {
         let options = self.options.build();
-        if let Some(expr) = self.expr {
-            let compile = compile_pruning_ir(expr, self.schema);
-            prune_compiled_with_bloom(self.metadata, self.schema, compile, &options)
-        } else {
-            // No predicate = keep all row groups
-            let row_groups: Vec<usize> = (0..self.metadata.num_row_groups()).collect();
-            PruneResult::new(row_groups, None, None, CompileResult::default())
+        match self.predicate {
+            #[cfg(feature = "datafusion")]
+            Some(PredicateRef::Expr(expr)) => {
+                let compile = compile_pruning_ir(expr, self.schema);
+                prune_compiled(self.metadata, self.schema, compile, &options)
+            }
+            Some(PredicateRef::Ir(exprs)) => {
+                let compile = AisleResult::from_ir_slice(exprs);
+                prune_compiled(self.metadata, self.schema, compile, &options)
+            }
+            None => {
+                // No predicate = keep all row groups
+                let row_groups: Vec<usize> = (0..self.metadata.num_row_groups()).collect();
+                PruneResult::new(row_groups, None, None, AisleResult::default())
+            }
         }
     }
 
@@ -314,6 +380,8 @@ impl<'a> PruneRequest<'a> {
     /// # Examples
     ///
     /// ```rust,ignore
+    /// # #[cfg(feature = "datafusion")]
+    /// # {
     /// use aisle::PruneRequest;
     /// use datafusion_expr::{col, lit};
     /// use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
@@ -326,7 +394,7 @@ impl<'a> PruneRequest<'a> {
     /// let predicate = col("user_id").eq(lit(12345i64));
     ///
     /// let result = PruneRequest::new(builder.metadata(), builder.schema())
-    ///     .with_predicate(&predicate)
+    ///     .with_df_predicate(&predicate)
     ///     .enable_bloom_filter(true)  // Enable bloom filter pruning
     ///     .enable_page_index(true)
     ///     .prune_async(&mut builder).await;
@@ -334,23 +402,39 @@ impl<'a> PruneRequest<'a> {
     /// println!("Kept {} row groups", result.row_groups().len());
     /// # Ok(())
     /// # }
+    /// # }
     /// ```
     pub async fn prune_async<P: AsyncBloomFilterProvider>(self, provider: &mut P) -> PruneResult {
         let options = self.options.build();
-        if let Some(expr) = self.expr {
-            let compile = compile_pruning_ir(expr, self.schema);
-            prune_compiled_with_bloom_provider(
-                self.metadata,
-                self.schema,
-                compile,
-                &options,
-                provider,
-            )
-            .await
-        } else {
-            // No predicate = keep all row groups
-            let row_groups: Vec<usize> = (0..self.metadata.num_row_groups()).collect();
-            PruneResult::new(row_groups, None, None, CompileResult::default())
+        match self.predicate {
+            #[cfg(feature = "datafusion")]
+            Some(PredicateRef::Expr(expr)) => {
+                let compile = compile_pruning_ir(expr, self.schema);
+                prune_compiled_with_bloom_provider(
+                    self.metadata,
+                    self.schema,
+                    compile,
+                    &options,
+                    provider,
+                )
+                .await
+            }
+            Some(PredicateRef::Ir(exprs)) => {
+                let compile = AisleResult::from_ir_slice(exprs);
+                prune_compiled_with_bloom_provider(
+                    self.metadata,
+                    self.schema,
+                    compile,
+                    &options,
+                    provider,
+                )
+                .await
+            }
+            None => {
+                // No predicate = keep all row groups
+                let row_groups: Vec<usize> = (0..self.metadata.num_row_groups()).collect();
+                PruneResult::new(row_groups, None, None, AisleResult::default())
+            }
         }
     }
 }

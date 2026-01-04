@@ -4,23 +4,22 @@
 /// - Row-group stats keep many row groups (overlapping ranges)
 /// - Page indexes skip most pages within those row groups
 /// - Bloom filters can eliminate row groups entirely (when available)
-
 use std::sync::Arc;
 
 use aisle::PruneRequest;
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use datafusion_common::pruning::PruningStatistics;
 use datafusion_common::{Column, Result};
-use datafusion_expr::{col, lit};
 use datafusion_expr::execution_props::ExecutionProps;
+use datafusion_expr::{col, lit};
 use datafusion_physical_expr::planner::create_physical_expr;
 use datafusion_pruning::PruningPredicate;
-use parquet::arrow::arrow_reader::statistics::StatisticsConverter;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::statistics::StatisticsConverter;
 use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader, RowGroupMetaData};
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use parquet::schema::types::SchemaDescriptor;
@@ -36,7 +35,10 @@ use parquet::schema::types::SchemaDescriptor;
 /// Result:
 /// - Row-group pruning: ineffective (all row groups contain overlapping clusters)
 /// - Page-level pruning: effective (only pages matching target cluster are read)
-fn create_overlapping_data(row_groups: usize, rows_per_group: usize) -> (tempfile::NamedTempFile, ParquetMetaData) {
+fn create_overlapping_data(
+    row_groups: usize,
+    rows_per_group: usize,
+) -> (tempfile::NamedTempFile, ParquetMetaData) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("value", DataType::Int64, false),
@@ -53,7 +55,7 @@ fn create_overlapping_data(row_groups: usize, rows_per_group: usize) -> (tempfil
     let file = std::fs::File::create(temp_file.path()).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props)).unwrap();
 
-    use rand::{seq::SliceRandom, SeedableRng};
+    use rand::{SeedableRng, seq::SliceRandom};
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
     // Define clusters: each cluster has 2000 sequential IDs
@@ -98,13 +100,17 @@ fn create_overlapping_data(row_groups: usize, rows_per_group: usize) -> (tempfil
     use parquet::file::metadata::PageIndexPolicy;
     let bytes = std::fs::read(temp_file.path()).unwrap();
     let metadata = ParquetMetaDataReader::new()
-        .with_page_index_policy(PageIndexPolicy::Optional)  // Load page indexes if available
+        .with_page_index_policy(PageIndexPolicy::Optional) // Load page indexes if available
         .parse_and_finish(&Bytes::from(bytes))
         .unwrap();
 
     // Verify bloom filters are written
     assert!(
-        metadata.row_group(0).column(0).bloom_filter_offset().is_some(),
+        metadata
+            .row_group(0)
+            .column(0)
+            .bloom_filter_offset()
+            .is_some(),
         "Bloom filters not written to file!"
     );
 
@@ -134,10 +140,7 @@ impl<'a> RowGroupPruningStatistics<'a> {
         self.row_group_metadatas.iter().copied()
     }
 
-    fn statistics_converter<'b>(
-        &'a self,
-        column: &'b Column,
-    ) -> Result<StatisticsConverter<'a>> {
+    fn statistics_converter<'b>(&'a self, column: &'b Column) -> Result<StatisticsConverter<'a>> {
         Ok(StatisticsConverter::try_new(
             &column.name,
             self.arrow_schema,
@@ -210,12 +213,13 @@ fn bench_point_query_comparison(c: &mut Criterion) {
 
     // First, let's see how many row groups each method keeps
     let aisle_result = PruneRequest::new(&metadata, &schema)
-        .with_predicate(&predicate)
-        .enable_page_index(false)  // Row-group level only
+        .with_df_predicate(&predicate)
+        .enable_page_index(false) // Row-group level only
         .prune();
 
     let df_schema = datafusion_common::DFSchema::try_from(schema.clone()).unwrap();
-    let physical_expr = create_physical_expr(&predicate, &df_schema, &ExecutionProps::new()).unwrap();
+    let physical_expr =
+        create_physical_expr(&predicate, &df_schema, &ExecutionProps::new()).unwrap();
     let pruning_predicate = PruningPredicate::try_new(physical_expr, schema.clone()).unwrap();
     let stats = RowGroupPruningStatistics::new(
         metadata.file_metadata().schema_descr(),
@@ -223,21 +227,29 @@ fn bench_point_query_comparison(c: &mut Criterion) {
         &schema,
     );
     let df_result = pruning_predicate.prune(&stats).unwrap();
-    let df_kept: Vec<usize> = df_result.iter().enumerate()
+    let df_kept: Vec<usize> = df_result
+        .iter()
+        .enumerate()
         .filter_map(|(idx, keep)| keep.then_some(idx))
         .collect();
 
     println!("\n=== Point Query: id = {} ===", target_id);
     println!("Dataset: {} row groups with overlapping ranges", row_groups);
-    println!("Aisle (row-group level): kept {} row groups", aisle_result.row_groups().len());
-    println!("DataFusion (row-group level): kept {} row groups", df_kept.len());
+    println!(
+        "Aisle (row-group level): kept {} row groups",
+        aisle_result.row_groups().len()
+    );
+    println!(
+        "DataFusion (row-group level): kept {} row groups",
+        df_kept.len()
+    );
     println!();
 
     // Benchmark: Aisle WITHOUT page index
     group.bench_function("aisle_rowgroup_only", |b| {
         b.iter(|| {
             let result = PruneRequest::new(black_box(&metadata), black_box(&schema))
-                .with_predicate(black_box(&predicate))
+                .with_df_predicate(black_box(&predicate))
                 .enable_page_index(false)
                 .prune();
             black_box(result.row_groups());
@@ -248,7 +260,7 @@ fn bench_point_query_comparison(c: &mut Criterion) {
     group.bench_function("aisle_with_page_index", |b| {
         b.iter(|| {
             let result = PruneRequest::new(black_box(&metadata), black_box(&schema))
-                .with_predicate(black_box(&predicate))
+                .with_df_predicate(black_box(&predicate))
                 .enable_page_index(true)
                 .prune();
             black_box(result.row_groups());
@@ -260,25 +272,26 @@ fn bench_point_query_comparison(c: &mut Criterion) {
         b.iter(|| {
             runtime.block_on(async {
                 let file = tokio::fs::File::open(temp_file.path()).await.unwrap();
-                let options = parquet::arrow::arrow_reader::ArrowReaderOptions::new()
-                    .with_page_index(true);
-                let mut builder = parquet::arrow::ParquetRecordBatchStreamBuilder::new_with_options(
-                    file,
-                    options,
-                )
-                .await
-                .unwrap();
+                let options =
+                    parquet::arrow::arrow_reader::ArrowReaderOptions::new().with_page_index(true);
+                let mut builder =
+                    parquet::arrow::ParquetRecordBatchStreamBuilder::new_with_options(
+                        file, options,
+                    )
+                    .await
+                    .unwrap();
 
                 // Use metadata from builder (no page indexes loaded)
                 let builder_metadata = builder.metadata().clone();
                 let builder_schema = builder.schema().clone();
 
-                let result = PruneRequest::new(black_box(&builder_metadata), black_box(&builder_schema))
-                    .with_predicate(black_box(&predicate))
-                    .enable_page_index(false)
-                    .enable_bloom_filter(true)
-                    .prune_async(&mut builder)
-                    .await;
+                let result =
+                    PruneRequest::new(black_box(&builder_metadata), black_box(&builder_schema))
+                        .with_df_predicate(black_box(&predicate))
+                        .enable_page_index(false)
+                        .enable_bloom_filter(true)
+                        .prune_async(&mut builder)
+                        .await;
 
                 black_box(result.row_groups());
             });
@@ -298,7 +311,7 @@ fn bench_point_query_comparison(c: &mut Criterion) {
                 // Use the metadata with page indexes (from create_overlapping_data)
                 // NOT builder.metadata() which doesn't have page indexes!
                 let result = PruneRequest::new(black_box(&metadata), black_box(&schema))
-                    .with_predicate(black_box(&predicate))
+                    .with_df_predicate(black_box(&predicate))
                     .enable_page_index(true)
                     .enable_bloom_filter(true)
                     .prune_async(&mut builder)
@@ -313,12 +326,11 @@ fn bench_point_query_comparison(c: &mut Criterion) {
     group.bench_function("datafusion_rowgroup_only", |b| {
         b.iter(|| {
             let df_schema = datafusion_common::DFSchema::try_from(schema.clone()).unwrap();
-            let physical_expr = create_physical_expr(
-                black_box(&predicate),
-                &df_schema,
-                &ExecutionProps::new(),
-            ).unwrap();
-            let pruning_predicate = PruningPredicate::try_new(physical_expr, schema.clone()).unwrap();
+            let physical_expr =
+                create_physical_expr(black_box(&predicate), &df_schema, &ExecutionProps::new())
+                    .unwrap();
+            let pruning_predicate =
+                PruningPredicate::try_new(physical_expr, schema.clone()).unwrap();
             let stats = RowGroupPruningStatistics::new(
                 metadata.file_metadata().schema_descr(),
                 metadata.row_groups(),
@@ -344,7 +356,8 @@ fn bench_point_query_comparison(c: &mut Criterion) {
 
         // Estimate pages per row group (from first row group)
         let pages_per_rg = if num_row_groups > 0 {
-            metadata.offset_index()
+            metadata
+                .offset_index()
                 .and_then(|idx| idx.get(0))
                 .and_then(|rg| rg.get(0))
                 .map(|col| col.page_locations().len())
@@ -364,33 +377,33 @@ fn bench_point_query_comparison(c: &mut Criterion) {
         0
     };
 
-    println!("Page index metadata overhead: ~{} KB", page_index_size / 1024);
+    println!(
+        "Page index metadata overhead: ~{} KB",
+        page_index_size / 1024
+    );
     println!("(This would be additional I/O in S3 scenario)\n");
 
     // Aisle with page index (sync)
     let aisle_page_result = PruneRequest::new(&metadata, &schema)
-        .with_predicate(&predicate)
+        .with_df_predicate(&predicate)
         .enable_page_index(true)
         .prune();
 
     // Aisle with bloom filter (async, no page index)
     let aisle_bloom_result = runtime.block_on(async {
         let file = tokio::fs::File::open(temp_file.path()).await.unwrap();
-        let options = parquet::arrow::arrow_reader::ArrowReaderOptions::new()
-            .with_page_index(true);
-        let mut builder = parquet::arrow::ParquetRecordBatchStreamBuilder::new_with_options(
-            file,
-            options,
-        )
-        .await
-        .unwrap();
+        let options = parquet::arrow::arrow_reader::ArrowReaderOptions::new().with_page_index(true);
+        let mut builder =
+            parquet::arrow::ParquetRecordBatchStreamBuilder::new_with_options(file, options)
+                .await
+                .unwrap();
 
         // Use builder metadata (no page indexes) - this is intentional for bloom-only test
         let builder_metadata = builder.metadata().clone();
         let builder_schema = builder.schema().clone();
 
         PruneRequest::new(&builder_metadata, &builder_schema)
-            .with_predicate(&predicate)
+            .with_df_predicate(&predicate)
             .enable_page_index(false)
             .enable_bloom_filter(true)
             .prune_async(&mut builder)
@@ -407,7 +420,7 @@ fn bench_point_query_comparison(c: &mut Criterion) {
 
         // Use the metadata with page indexes from create_overlapping_data()
         PruneRequest::new(&metadata, &schema)
-            .with_predicate(&predicate)
+            .with_df_predicate(&predicate)
             .enable_page_index(true)
             .enable_bloom_filter(true)
             .prune_async(&mut builder)
@@ -418,12 +431,17 @@ fn bench_point_query_comparison(c: &mut Criterion) {
     println!("Page index only:");
     println!("  Row groups: {}", aisle_page_result.row_groups().len());
     if let Some(row_selection) = aisle_page_result.row_selection() {
-        let selected_count: usize = row_selection.iter()
+        let selected_count: usize = row_selection
+            .iter()
             .filter_map(|s| (!s.skip).then_some(s.row_count))
             .sum();
         let total_rows: usize = row_selection.iter().map(|s| s.row_count).sum();
-        println!("  Row selection: {} out of {} rows ({:.1}%)",
-            selected_count, total_rows, (selected_count as f64 / total_rows as f64) * 100.0);
+        println!(
+            "  Row selection: {} out of {} rows ({:.1}%)",
+            selected_count,
+            total_rows,
+            (selected_count as f64 / total_rows as f64) * 100.0
+        );
     }
 
     println!("Bloom filter only:");
@@ -432,12 +450,17 @@ fn bench_point_query_comparison(c: &mut Criterion) {
     println!("Both (page index + bloom filter):");
     println!("  Row groups: {}", aisle_both_result.row_groups().len());
     if let Some(row_selection) = aisle_both_result.row_selection() {
-        let selected_count: usize = row_selection.iter()
+        let selected_count: usize = row_selection
+            .iter()
             .filter_map(|s| (!s.skip).then_some(s.row_count))
             .sum();
         let total_rows: usize = row_selection.iter().map(|s| s.row_count).sum();
-        println!("  Row selection: {} out of {} rows ({:.1}%)",
-            selected_count, total_rows, (selected_count as f64 / total_rows as f64) * 100.0);
+        println!(
+            "  Row selection: {} out of {} rows ({:.1}%)",
+            selected_count,
+            total_rows,
+            (selected_count as f64 / total_rows as f64) * 100.0
+        );
         println!("  ✓ Page-level pruning working! (has row selection)");
     } else {
         println!("  ⚠️  WARNING: No row selection - page indexes may not be loaded!");

@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
-use aisle::PruneRequest;
+use aisle::{Expr, PruneRequest};
 use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use datafusion_expr::{Expr, col, expr::Like, lit};
 use parquet::{
     arrow::ArrowWriter,
     file::{
@@ -51,13 +50,7 @@ fn prunes_row_groups_with_like_prefix() {
     let bytes = write_parquet(&[batch1, batch2], props);
     let metadata = load_metadata(&bytes);
 
-    let expr = Expr::Like(Like::new(
-        false,
-        Box::new(col("s")),
-        Box::new(lit("foo%")),
-        None,
-        false,
-    ));
+    let expr = Expr::starts_with("s", "foo");
 
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)

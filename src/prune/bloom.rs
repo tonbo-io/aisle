@@ -4,7 +4,7 @@ use datafusion_common::ScalarValue;
 use parquet::bloom_filter::Sbbf;
 
 use super::context::RowGroupContext;
-use crate::ir::TriState;
+use crate::expr::TriState;
 
 pub(super) fn eval_bloom_eq(
     column: &str,

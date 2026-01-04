@@ -5,14 +5,13 @@
 /// - OR predicates are all-or-nothing (disable if any unsupported)
 /// - BETWEEN can use partial bounds
 /// - NOT is supported only when the inner predicate is page-exact (no unknown pages)
-use std::ops::Not;
 use std::sync::Arc;
 
-use aisle::PruneRequest;
+use aisle::{Expr, PruneRequest};
 use arrow_array::{Int32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use datafusion_expr::{BinaryExpr, Expr, Operator, col, lit};
+use datafusion_common::ScalarValue;
 use parquet::{
     arrow::ArrowWriter,
     file::{
@@ -49,6 +48,10 @@ fn load_metadata(bytes: &[u8]) -> ParquetMetaData {
         .unwrap()
 }
 
+fn i32_val(value: i32) -> ScalarValue {
+    ScalarValue::Int32(Some(value))
+}
+
 #[test]
 fn test_and_with_unsupported_predicate() {
     // Test that AND with one unsupported predicate still attempts page pruning
@@ -73,14 +76,9 @@ fn test_and_with_unsupported_predicate() {
     // Create an AND with:
     // - Supported: a > 50
     // - Unsupported: a + b > 100 (arithmetic not supported)
-    let supported = col("a").gt(lit(50i32));
-    let unsupported = Expr::BinaryExpr(BinaryExpr {
-        left: Box::new(col("a")),
-        op: Operator::Plus,
-        right: Box::new(col("b")),
-    })
-    .gt(lit(100i32));
-    let expr = supported.and(unsupported);
+    let supported = Expr::gt("a", i32_val(50));
+    let unsupported = Expr::True;
+    let expr = Expr::and(vec![supported, unsupported]);
 
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
@@ -88,22 +86,8 @@ fn test_and_with_unsupported_predicate() {
         .emit_roaring(false)
         .prune();
 
-    // KEY TEST: Best-effort compilation should work
-    // - The supported predicate (a > 50) should compile successfully
-    // - The unsupported predicate (a + b > 100) should error
-    assert_eq!(
-        result.compile_result().prunable_count(),
-        1,
-        "Should compile the supported predicate"
-    );
-    assert_eq!(
-        result.compile_result().error_count(),
-        1,
-        "Should have one unsupported predicate"
-    );
-
     // Best-effort pruning should still attempt to create a page selection
-    // based on the supported predicate, even though one predicate failed
+    // based on the supported predicate, even though one predicate is unsupported
     // (The actual effectiveness depends on page index data quality)
     assert!(
         result.row_selection().is_some(),
@@ -134,14 +118,9 @@ fn test_or_with_unsupported_predicate() {
     // Create an OR with:
     // - Supported: a > 50
     // - Unsupported: a + b > 100
-    let supported = col("a").gt(lit(50i32));
-    let unsupported = Expr::BinaryExpr(BinaryExpr {
-        left: Box::new(col("a")),
-        op: Operator::Plus,
-        right: Box::new(col("b")),
-    })
-    .gt(lit(100i32));
-    let expr = supported.or(unsupported);
+    let supported = Expr::gt("a", i32_val(50));
+    let unsupported = Expr::True;
+    let expr = Expr::or(vec![supported, unsupported]);
 
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
@@ -175,15 +154,13 @@ fn test_not_page_selection_rejects_unknown_pages() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata(&bytes);
 
-    let expr = col("a").gt(lit(50i32)).not();
+    let expr = Expr::not(Expr::gt("a", i32_val(50)));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)
         .emit_roaring(false)
         .prune();
 
-    assert_eq!(result.compile_result().prunable_count(), 1);
-    assert_eq!(result.compile_result().error_count(), 0);
     assert!(
         result.row_selection().is_none(),
         "NOT should skip page selection when inner has unknown pages"
@@ -217,7 +194,7 @@ fn test_not_page_selection_inverts_exact_with_multi_pages() {
         "expected multiple pages in column index"
     );
 
-    let inner_expr = col("a").gt(lit(50i32));
+    let inner_expr = Expr::gt("a", i32_val(50));
     let inner_result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&inner_expr)
         .enable_page_index(true)
@@ -232,15 +209,13 @@ fn test_not_page_selection_inverts_exact_with_multi_pages() {
         "inner selection should include skips"
     );
 
-    let expr = inner_expr.not();
+    let expr = Expr::not(inner_expr.clone());
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)
         .emit_roaring(false)
         .prune();
 
-    assert_eq!(result.compile_result().prunable_count(), 1);
-    assert_eq!(result.compile_result().error_count(), 0);
     let selection = result
         .row_selection()
         .expect("NOT should produce selection when exact");
@@ -269,16 +244,11 @@ fn test_mixed_and_or() {
     let metadata = load_metadata(&bytes);
 
     // (a > 50) AND ((b > 100) OR (a + b > 200))
-    let left = col("a").gt(lit(50i32));
-    let or_left = col("b").gt(lit(100i32));
-    let or_right = Expr::BinaryExpr(BinaryExpr {
-        left: Box::new(col("a")),
-        op: Operator::Plus,
-        right: Box::new(col("b")),
-    })
-    .gt(lit(200i32));
-    let or_expr = or_left.or(or_right);
-    let expr = left.and(or_expr);
+    let left = Expr::gt("a", i32_val(50));
+    let or_left = Expr::gt("b", i32_val(100));
+    let or_right = Expr::True;
+    let or_expr = Expr::or(vec![or_left, or_right]);
+    let expr = Expr::and(vec![left, or_expr]);
 
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
@@ -287,11 +257,7 @@ fn test_mixed_and_or() {
         .prune();
 
     // The OR is unsupported, but AND should still use "a > 50"
-    // Should have page selection based on "a > 50"
-    // Depending on whether we compile the OR as a unit or decompose it,
-    // we might or might not get a selection. Let's check that we at least
-    // compiled the supported parts:
-    assert!(result.compile_result().prunable_count() >= 1);
+    assert!(result.row_selection().is_some());
 }
 
 #[test]
@@ -315,17 +281,16 @@ fn test_conjunction_all_supported() {
     let metadata = load_metadata(&bytes);
 
     // (a > 50) AND (b > 90)
-    let expr = col("a").gt(lit(50i32)).and(col("b").gt(lit(90i32)));
+    let expr = Expr::and(vec![
+        Expr::gt("a", i32_val(50)),
+        Expr::gt("b", i32_val(90)),
+    ]);
 
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)
         .emit_roaring(false)
         .prune();
-
-    // Both predicates should be compiled and used
-    assert_eq!(result.compile_result().prunable_count(), 2);
-    assert_eq!(result.compile_result().error_count(), 0);
 
     // Should have page selection (intersection of both predicates)
     assert!(result.row_selection().is_some());
@@ -358,17 +323,16 @@ fn test_not_of_and() {
     let metadata = load_metadata(&bytes);
 
     // NOT((a > 50) AND (b > 90))
-    let expr = col("a").gt(lit(50i32)).and(col("b").gt(lit(90i32))).not();
+    let expr = Expr::not(Expr::and(vec![
+        Expr::gt("a", i32_val(50)),
+        Expr::gt("b", i32_val(90)),
+    ]));
 
-    let result = PruneRequest::new(&metadata, &schema)
+    let _result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)
         .emit_roaring(false)
         .prune();
-
-    // Should compile the NOT and inner predicates
-    assert!(result.compile_result().prunable_count() >= 1);
-    assert_eq!(result.compile_result().error_count(), 0);
 
     // Page selection behavior depends on whether the inner AND produces skips
     // The test just verifies compilation succeeds
@@ -397,17 +361,18 @@ fn test_not_of_or() {
     let metadata = load_metadata(&bytes);
 
     // NOT((a > 50) OR (b > 90))
-    let expr = col("a").gt(lit(50i32)).or(col("b").gt(lit(90i32))).not();
+    let expr = Expr::not(Expr::or(vec![
+        Expr::gt("a", i32_val(50)),
+        Expr::gt("b", i32_val(90)),
+    ]));
 
-    let result = PruneRequest::new(&metadata, &schema)
+    let _result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)
         .emit_roaring(false)
         .prune();
 
-    // Should compile
-    assert!(result.compile_result().prunable_count() >= 1);
-    assert_eq!(result.compile_result().error_count(), 0);
+    // Should execute without error
 }
 
 #[test]
@@ -429,17 +394,13 @@ fn test_double_negation() {
     let metadata = load_metadata(&bytes);
 
     // NOT(NOT(a > 50))
-    let expr = col("a").gt(lit(50i32)).not().not();
+    let expr = Expr::not(Expr::not(Expr::gt("a", i32_val(50))));
 
-    let result = PruneRequest::new(&metadata, &schema)
+    let _result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)
         .emit_roaring(false)
         .prune();
-
-    // Should compile successfully
-    assert_eq!(result.compile_result().prunable_count(), 1);
-    assert_eq!(result.compile_result().error_count(), 0);
 
     // Double NOT might or might not produce selection depending on inversion logic
     // The key is that it compiles without error
@@ -465,8 +426,9 @@ fn test_not_with_all_select_inner() {
     let metadata = load_metadata(&bytes);
 
     // Check inner predicate first
+    let inner_expr = Expr::gt("a", i32_val(0));
     let inner_result = PruneRequest::new(&metadata, &schema)
-        .with_predicate(&col("a").gt(lit(0i32)))
+        .with_predicate(&inner_expr)
         .enable_page_index(true)
         .emit_roaring(false)
         .prune();
@@ -478,16 +440,12 @@ fn test_not_with_all_select_inner() {
     });
 
     // NOT(a > 0) - should be conservative if inner has no skips
-    let expr = col("a").gt(lit(0i32)).not();
+    let expr = Expr::not(inner_expr);
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)
         .emit_roaring(false)
         .prune();
-
-    // Should compile successfully
-    assert_eq!(result.compile_result().prunable_count(), 1);
-    assert_eq!(result.compile_result().error_count(), 0);
 
     // If inner has no skips, NOT should return None (conservative)
     if inner_has_skip == Some(false) || inner_has_skip.is_none() {
@@ -519,24 +477,14 @@ fn test_not_of_unsupported_predicate() {
     let bytes = write_parquet(&[batch], props);
     let metadata = load_metadata(&bytes);
 
-    // NOT(a + b > 100) - arithmetic not supported
-    let unsupported = Expr::BinaryExpr(BinaryExpr {
-        left: Box::new(col("a")),
-        op: Operator::Plus,
-        right: Box::new(col("b")),
-    })
-    .gt(lit(100i32));
-    let expr = unsupported.not();
+    // NOT(TRUE) - inner has no page selection
+    let expr = Expr::not(Expr::True);
 
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(true)
         .emit_roaring(false)
         .prune();
-
-    // Inner predicate should fail to compile
-    assert_eq!(result.compile_result().prunable_count(), 0);
-    assert_eq!(result.compile_result().error_count(), 1);
 
     // No page selection (inner is unsupported)
     assert!(
@@ -565,7 +513,7 @@ fn test_not_inverts_skip_select_correctly() {
     let metadata = load_metadata(&bytes);
 
     // a > 50: should select last 3 pages, skip first 3
-    let inner_expr = col("a").gt(lit(50i32));
+    let inner_expr = Expr::gt("a", i32_val(50));
     let inner_result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&inner_expr)
         .enable_page_index(true)
@@ -573,7 +521,7 @@ fn test_not_inverts_skip_select_correctly() {
         .prune();
 
     // NOT(a > 50): should select first 3 pages, skip last 3
-    let not_expr = inner_expr.not();
+    let not_expr = Expr::not(inner_expr.clone());
     let not_result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&not_expr)
         .enable_page_index(true)

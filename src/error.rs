@@ -6,7 +6,7 @@ use thiserror::Error;
 /// These errors indicate which parts of a predicate cannot be evaluated
 /// against Parquet metadata for pruning purposes.
 #[derive(Debug, Error, Clone)]
-pub enum CompileError {
+pub enum AisleError {
     /// The expression type is not supported for metadata pruning
     #[error("Unsupported expression: {expr_type}")]
     UnsupportedExpr {

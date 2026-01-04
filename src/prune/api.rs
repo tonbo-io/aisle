@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use arrow_schema::Schema;
@@ -15,41 +16,42 @@ use super::{
     result::PruneResult,
 };
 use crate::{
-    compile::CompileResult,
-    ir::{IrExpr, TriState},
+    AisleResult,
+    expr::{Expr, TriState},
+    expr::rewrite,
     selection::row_selection_to_roaring,
 };
 
 pub(crate) fn prune_compiled(
     metadata: &ParquetMetaData,
     schema: &Schema,
-    compile: CompileResult,
-    options: &PruneOptions,
-) -> PruneResult {
-    prune_compiled_with_bloom(metadata, schema, compile, options)
-}
-
-pub(super) fn prune_compiled_with_bloom(
-    metadata: &ParquetMetaData,
-    schema: &Schema,
-    compile: CompileResult,
+    compile: AisleResult,
     options: &PruneOptions,
 ) -> PruneResult {
     let evaluator = PruneEvaluator::new(metadata, schema);
+    let predicates = if options.enable_bloom_filter() {
+        Cow::Owned(rewrite::inject_bloom_filters_all(compile.prunable()))
+    } else {
+        Cow::Borrowed(compile.prunable())
+    };
     let mut row_groups = Vec::new();
     let mut selections = Vec::new();
     let mut any_selection = false;
 
     for row_group_idx in 0..metadata.num_row_groups() {
         let row_count = metadata.row_group(row_group_idx).num_rows() as usize;
-        let tri =
-            evaluator.eval_row_group_conjunction(compile.prunable(), row_group_idx, None, options);
+        let tri = evaluator.eval_row_group_conjunction(
+            predicates.as_ref(),
+            row_group_idx,
+            None,
+            options,
+        );
         if tri == TriState::False {
             continue;
         }
 
         let mut selection = if options.enable_page_index() {
-            evaluator.eval_pages_for_predicates(compile.prunable(), row_group_idx, options)
+            evaluator.eval_pages_for_predicates(predicates.as_ref(), row_group_idx, options)
         } else {
             None
         };
@@ -100,17 +102,22 @@ pub(super) fn prune_compiled_with_bloom(
 pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvider>(
     metadata: &ParquetMetaData,
     schema: &Schema,
-    compile: CompileResult,
+    compile: AisleResult,
     options: &PruneOptions,
     provider: &mut P,
 ) -> PruneResult {
     let evaluator = PruneEvaluator::new(metadata, schema);
+    let predicates = if options.enable_bloom_filter() {
+        Cow::Owned(rewrite::inject_bloom_filters_all(compile.prunable()))
+    } else {
+        Cow::Borrowed(compile.prunable())
+    };
     let mut row_groups = Vec::new();
     let mut selections = Vec::new();
     let mut any_selection = false;
 
     let bloom_columns = if options.enable_bloom_filter() {
-        collect_bloom_columns(compile.prunable())
+        collect_bloom_columns(predicates.as_ref())
     } else {
         HashSet::new()
     };
@@ -130,7 +137,7 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
         };
 
         let tri = evaluator.eval_row_group_conjunction(
-            compile.prunable(),
+            predicates.as_ref(),
             row_group_idx,
             bloom_filters,
             options,
@@ -140,7 +147,7 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
         }
 
         let mut selection = if options.enable_page_index() {
-            evaluator.eval_pages_for_predicates(compile.prunable(), row_group_idx, options)
+            evaluator.eval_pages_for_predicates(predicates.as_ref(), row_group_idx, options)
         } else {
             None
         };
@@ -200,7 +207,7 @@ fn concat_selections(selections: &[(usize, Option<RowSelection>)]) -> RowSelecti
     RowSelection::from(combined)
 }
 
-fn collect_bloom_columns(predicates: &[IrExpr]) -> HashSet<String> {
+fn collect_bloom_columns(predicates: &[Expr]) -> HashSet<String> {
     let mut columns = HashSet::new();
     for predicate in predicates {
         collect_bloom_columns_for_expr(predicate, &mut columns);
@@ -208,24 +215,24 @@ fn collect_bloom_columns(predicates: &[IrExpr]) -> HashSet<String> {
     columns
 }
 
-fn collect_bloom_columns_for_expr(expr: &IrExpr, columns: &mut HashSet<String>) {
+fn collect_bloom_columns_for_expr(expr: &Expr, columns: &mut HashSet<String>) {
     match expr {
-        IrExpr::BloomFilterEq { column, .. } | IrExpr::BloomFilterInList { column, .. } => {
+        Expr::BloomFilterEq { column, .. } | Expr::BloomFilterInList { column, .. } => {
             columns.insert(column.clone());
         }
-        IrExpr::And(parts) | IrExpr::Or(parts) => {
+        Expr::And(parts) | Expr::Or(parts) => {
             for part in parts {
                 collect_bloom_columns_for_expr(part, columns);
             }
         }
-        IrExpr::Not(inner) => collect_bloom_columns_for_expr(inner, columns),
-        IrExpr::Cmp { .. }
-        | IrExpr::Between { .. }
-        | IrExpr::InList { .. }
-        | IrExpr::StartsWith { .. }
-        | IrExpr::IsNull { .. }
-        | IrExpr::True
-        | IrExpr::False => {}
+        Expr::Not(inner) => collect_bloom_columns_for_expr(inner, columns),
+        Expr::Cmp { .. }
+        | Expr::Between { .. }
+        | Expr::InList { .. }
+        | Expr::StartsWith { .. }
+        | Expr::IsNull { .. }
+        | Expr::True
+        | Expr::False => {}
     }
 }
 
@@ -299,7 +306,7 @@ impl<'a> PruneEvaluator<'a> {
 
     fn eval_row_group_conjunction(
         &self,
-        predicates: &[IrExpr],
+        predicates: &[Expr],
         row_group_idx: usize,
         bloom_filters: Option<HashMap<usize, Sbbf>>,
         options: &PruneOptions,
@@ -310,7 +317,7 @@ impl<'a> PruneEvaluator<'a> {
 
     fn eval_pages_for_predicates(
         &self,
-        predicates: &[IrExpr],
+        predicates: &[Expr],
         row_group_idx: usize,
         options: &PruneOptions,
     ) -> Option<RowSelection> {

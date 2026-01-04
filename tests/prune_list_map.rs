@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use aisle::PruneRequest;
+use aisle::{Expr, PruneRequest};
 use arrow_array::{
     ArrayRef, Int32Array, ListArray, MapArray, RecordBatch, StringArray, StructArray,
 };
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use datafusion_expr::{col, lit};
+use datafusion_common::ScalarValue;
 use parquet::{
     arrow::ArrowWriter,
     file::{
@@ -26,6 +26,10 @@ fn write_parquet(batches: &[RecordBatch], props: WriterProperties) -> Vec<u8> {
     buffer
 }
 
+
+fn i32_val(value: i32) -> ScalarValue {
+    ScalarValue::Int32(Some(value))
+}
 fn load_metadata(bytes: &[u8]) -> ParquetMetaData {
     let bytes = Bytes::copy_from_slice(bytes);
     ParquetMetaDataReader::new()
@@ -86,7 +90,7 @@ fn prunes_row_groups_with_list_column() {
 
     // Filter: list elements > 9
     // Should keep only row group 1 (values 10-14)
-    let expr = col("my_list.list.element").gt(lit(9));
+    let expr = Expr::gt("my_list.list.element", i32_val(9));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -147,7 +151,7 @@ fn prunes_row_groups_with_list_column_coerced_names() {
     let metadata = load_metadata(&bytes);
 
     // Filter using standard Parquet path after coercion
-    let expr = col("my_list.list.element").gt(lit(9));
+    let expr = Expr::gt("my_list.list.element", i32_val(9));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -266,7 +270,7 @@ fn prunes_row_groups_with_map_column() {
     // Filter: map values > 9
     // Should keep only row group 1 (values 10, 11)
     // Note: Parquet uses the Arrow field name "entries", not "key_value"
-    let expr = col("my_map.entries.value").gt(lit(9));
+    let expr = Expr::gt("my_map.entries.value", i32_val(9));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -384,7 +388,7 @@ fn prunes_row_groups_with_map_column_coerced_names() {
     let metadata = load_metadata(&bytes);
 
     // Filter using standard Parquet path after coercion
-    let expr = col("my_map.key_value.value").gt(lit(9));
+    let expr = Expr::gt("my_map.key_value.value", i32_val(9));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -497,7 +501,7 @@ fn prunes_row_groups_with_list_of_structs() {
 
     // Filter: item.id > 9
     // Should keep only row group 1 (IDs 10, 11)
-    let expr = col("items.list.element.id").gt(lit(9));
+    let expr = Expr::gt("items.list.element.id", i32_val(9));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)
@@ -545,7 +549,7 @@ fn test_list_custom_element_name_shows_bug() {
     }
 
     // Try to prune - this will fail because data_type_for_path expects "element"
-    let expr = col("my_list.list.item").gt(lit(0));
+    let expr = Expr::gt("my_list.list.item", i32_val(0));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
         .enable_page_index(false)

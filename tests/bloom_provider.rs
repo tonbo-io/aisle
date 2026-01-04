@@ -1,10 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
-use aisle::{AsyncBloomFilterProvider, PruneRequest};
+use aisle::{AsyncBloomFilterProvider, Expr, PruneRequest};
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use datafusion_expr::{col, lit};
+use datafusion_common::ScalarValue;
 use parquet::{
     arrow::AsyncArrowWriter,
     bloom_filter::Sbbf,
@@ -40,6 +40,15 @@ fn load_metadata(bytes: &[u8]) -> ParquetMetaData {
         .with_page_index_policy(PageIndexPolicy::Skip)
         .parse_and_finish(&bytes)
         .unwrap()
+}
+
+fn bloom_eq_expr(column: &str, value: i64) -> Expr {
+    // Internal test: construct bloom filter variant directly
+    // Users should use Expr::eq() instead
+    Expr::BloomFilterEq {
+        column: column.to_string(),
+        value: ScalarValue::Int64(Some(value)),
+    }
 }
 
 // ============================================================================
@@ -186,7 +195,7 @@ async fn test_mock_provider_tracks_calls() {
     let metadata = load_metadata(&bytes);
 
     let mut provider = MockBloomProvider::new();
-    let expr = col("id").eq(lit(150i64));
+    let expr = bloom_eq_expr("id", 150);
 
     // Call without bloom filters enabled - provider should not be called
     let _result = PruneRequest::new(&metadata, &schema)
@@ -218,7 +227,7 @@ async fn test_mock_provider_called_with_bloom_enabled() {
     let metadata = load_metadata(&bytes);
 
     let mut provider = MockBloomProvider::new();
-    let expr = col("id").eq(lit(150i64));
+    let expr = bloom_eq_expr("id", 150);
 
     let _result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)
@@ -326,7 +335,7 @@ async fn test_provider_called_for_multiple_row_groups() {
     let metadata = load_metadata(&bytes);
 
     let mut provider = MockBloomProvider::new();
-    let expr = col("id").eq(lit(150i64));
+    let expr = bloom_eq_expr("id", 150);
 
     let _result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&expr)

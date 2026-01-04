@@ -6,8 +6,16 @@
 /// 3. Ordering predicates with truncated statistics (requires aggressive mode)
 /// 4. Prefix matching with LIKE
 /// 5. Binary column ordering
-use aisle::PruneRequest;
-use datafusion_expr::{col, lit};
+use aisle::{Expr, PruneRequest};
+use datafusion_common::ScalarValue;
+
+fn str_val(value: &str) -> ScalarValue {
+    ScalarValue::Utf8(Some(value.to_string()))
+}
+
+fn bin_val(bytes: &[u8]) -> ScalarValue {
+    ScalarValue::Binary(Some(bytes.to_vec()))
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================================================
@@ -25,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   Row group 2: name=['Grace', 'Henry', 'Iris']
 
     // Test 1: Exact match - works with any statistics
-    let predicate = col("name").eq(lit("Eve"));
+    let predicate = Expr::eq("name", str_val("Eve"));
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&predicate)
         .prune();
@@ -38,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Test 2: IN list - also equality-based
-    let predicate = col("name").in_list(vec![lit("Alice"), lit("Grace")], false);
+    let predicate = Expr::in_list("name", vec![str_val("Alice"), str_val("Grace")]);
     let result = PruneRequest::new(&metadata, &schema)
         .with_predicate(&predicate)
         .prune();
@@ -64,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   Row group 2: min='Grace',  max='Iris'
 
     // Test 1: Greater than - uses ordering
-    let predicate = col("name").gt(lit("Eve"));
+    let predicate = Expr::gt("name", str_val("Eve"));
     let result = PruneRequest::new(&metadata_exact, &schema_exact)
         .with_predicate(&predicate)
         .prune();
@@ -77,9 +85,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Test 2: Range query
-    let predicate = col("name")
-        .gt_eq(lit("Dave"))
-        .and(col("name").lt(lit("Henry")));
+    let predicate = Expr::and(vec![
+        Expr::gt_eq("name", str_val("Dave")),
+        Expr::lt("name", str_val("Henry")),
+    ]);
     let result = PruneRequest::new(&metadata_exact, &schema_exact)
         .with_predicate(&predicate)
         .prune();
@@ -104,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   Row group 1: email=['admin@corp.com', 'admin@test.com']
     //   Row group 2: email=['user@example.com', 'zed@example.com']
 
-    let predicate = col("email").like(lit("admin%"));
+    let predicate = Expr::starts_with("email", "admin");
     let result = PruneRequest::new(&metadata_prefix, &schema_prefix)
         .with_predicate(&predicate)
         .prune();
@@ -130,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   Row group 1: min='MMM...', max='NNN...'
     //   Row group 2: min='XXX...', max='ZZZ...'
 
-    let predicate = col("description").gt(lit("N"));
+    let predicate = Expr::gt("description", str_val("N"));
 
     println!("Scenario 4: Truncated Statistics (Aggressive Mode)\n");
     println!("Filter: description > 'N'\n");
@@ -142,11 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Conservative mode (default):");
     println!("  Result: {:?}", result_conservative.row_groups());
-    if result_conservative.compile_result().errors().is_empty() {
-        println!("  Note: Exact statistics available, pruning works");
-    } else {
-        println!("  Note: Would keep all row groups if stats were truncated");
-    }
+    println!("  Note: Conservative mode may keep all row groups if stats are truncated");
 
     // Aggressive mode - allows truncated stats
     let result_aggressive = PruneRequest::new(&metadata_trunc, &schema_trunc)
@@ -173,7 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   Row group 2: hash in range [0x80..., 0xFF...]
 
     // Test 1: Binary equality - always safe
-    let predicate = col("hash").eq(lit(&[0x50, 0xAA, 0xBB][..]));
+    let predicate = Expr::eq("hash", bin_val(&[0x50, 0xAA, 0xBB]));
     let result = PruneRequest::new(&metadata_binary, &schema_binary)
         .with_predicate(&predicate)
         .prune();
@@ -186,7 +191,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Test 2: Binary ordering - requires column order
-    let predicate = col("hash").gt(lit(&[0x80][..]));
+    let predicate = Expr::gt("hash", bin_val(&[0x80]));
     let result = PruneRequest::new(&metadata_binary, &schema_binary)
         .with_predicate(&predicate)
         .prune();

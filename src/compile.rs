@@ -3,37 +3,38 @@ use std::collections::HashMap;
 use arrow_schema::{DataType, Field, Schema};
 use datafusion_common::{Column, ScalarValue};
 use datafusion_expr::{
-    Between, BinaryExpr, Expr, Operator,
+    Between, BinaryExpr, Expr as DfExpr, Operator,
     expr::{InList, Like},
     utils::split_conjunction,
 };
 
 use crate::{
-    error::CompileError,
-    ir::{CmpOp, IrExpr},
+    AisleResult,
+    error::AisleError,
+    expr::{CmpOp, Expr as IrExpr},
 };
 
 /// Get a user-friendly name for an expression type
-fn expr_type_name(expr: &Expr) -> String {
+fn expr_type_name(expr: &DfExpr) -> String {
     match expr {
-        Expr::Column(col) => format!("column '{}'", col.name),
-        Expr::Literal(val, _) => format!("literal {}", val),
-        Expr::BinaryExpr(BinaryExpr { op, .. }) => {
+        DfExpr::Column(col) => format!("column '{}'", col.name),
+        DfExpr::Literal(val, _) => format!("literal {}", val),
+        DfExpr::BinaryExpr(BinaryExpr { op, .. }) => {
             format!("binary operation '{}'", operator_symbol(op))
         }
-        Expr::Like(_) => "LIKE expression".to_string(),
-        Expr::ScalarFunction(func) => format!("function '{:?}'", func.func),
-        Expr::AggregateFunction(func) => format!("aggregate function '{:?}'", func.func),
-        Expr::Case(_) => "CASE expression".to_string(),
-        Expr::Cast(cast) => format!("CAST to {}", cast.data_type),
-        Expr::Between(_) => "BETWEEN expression".to_string(),
-        Expr::InList(_) => "IN expression".to_string(),
-        Expr::IsNull(_) => "IS NULL expression".to_string(),
-        Expr::IsNotNull(_) => "IS NOT NULL expression".to_string(),
-        Expr::Not(_) => "NOT expression".to_string(),
-        Expr::Negative(_) => "negation".to_string(),
-        Expr::TryCast(cast) => format!("TRY_CAST to {}", cast.data_type),
-        Expr::Alias(_) => "aliased expression".to_string(),
+        DfExpr::Like(_) => "LIKE expression".to_string(),
+        DfExpr::ScalarFunction(func) => format!("function '{:?}'", func.func),
+        DfExpr::AggregateFunction(func) => format!("aggregate function '{:?}'", func.func),
+        DfExpr::Case(_) => "CASE expression".to_string(),
+        DfExpr::Cast(cast) => format!("CAST to {}", cast.data_type),
+        DfExpr::Between(_) => "BETWEEN expression".to_string(),
+        DfExpr::InList(_) => "IN expression".to_string(),
+        DfExpr::IsNull(_) => "IS NULL expression".to_string(),
+        DfExpr::IsNotNull(_) => "IS NOT NULL expression".to_string(),
+        DfExpr::Not(_) => "NOT expression".to_string(),
+        DfExpr::Negative(_) => "negation".to_string(),
+        DfExpr::TryCast(cast) => format!("TRY_CAST to {}", cast.data_type),
+        DfExpr::Alias(_) => "aliased expression".to_string(),
         _ => "complex expression".to_string(),
     }
 }
@@ -76,114 +77,118 @@ fn operator_symbol(op: &Operator) -> &'static str {
     }
 }
 
-/// Result of compiling a DataFusion expression into pruning IR.
+/// Extension trait for compiling DataFusion expressions into pruning IR.
 ///
-/// Uses an **error accumulation** strategy: attempts to compile all
-/// predicates and returns both successes and failures. This allows
-/// partial pruning even when some predicates cannot be compiled.
+/// This trait adds `.compile()` method chaining to DataFusion expressions for a more ergonomic API.
 ///
 /// # Example
 /// ```no_run
-/// use aisle::PruneRequest;
+/// use aisle::CompilePruningIr;
 /// use arrow_schema::{DataType, Field, Schema};
-/// use datafusion_expr::{BinaryExpr, Expr, Operator, col, lit};
-/// use parquet::file::metadata::ParquetMetaData;
+/// use datafusion_expr::{col, lit};
 ///
-/// let schema = Schema::new(vec![Field::new("a", DataType::Int64, false)]);
-/// let metadata: ParquetMetaData = todo!();
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
 ///
-/// // Mix of supported and unsupported predicates
-/// let unsupported = Expr::BinaryExpr(BinaryExpr {
-///     left: Box::new(col("a")),
-///     op: Operator::Plus,
-///     right: Box::new(lit(10)),
-/// });
-/// let expr = col("a").gt(lit(5)).and(unsupported);
+/// // Old verbose API:
+/// // let compile = compile_pruning_ir(&predicate, &schema);
+/// // let ir = compile.ir_exprs().first().cloned().ok_or(...)?;
 ///
-/// let result = PruneRequest::new(&metadata, &schema)
-///     .with_predicate(&expr)
-///     .prune();
-///
-/// let compile = result.compile_result();
-/// assert_eq!(compile.prunable_count(), 1); // a > 5 compiled
-/// assert_eq!(compile.error_count(), 1); // a + 10 failed
+/// // New method chain API:
+/// let ir = col("id").gt(lit(42i64)).compile(&schema)?;
+/// # Ok(())
+/// # }
 /// ```
-#[derive(Clone, Debug, Default)]
-pub struct CompileResult {
-    /// Successfully compiled predicates that can be evaluated against metadata
-    prunable: Vec<IrExpr>,
-    /// Compilation errors for predicates that could not be compiled
-    errors: Vec<CompileError>,
-}
-
-impl CompileResult {
-    /// Get the successfully compiled predicates (internal)
-    pub(crate) fn prunable(&self) -> &[IrExpr] {
-        &self.prunable
-    }
-
-    /// Get the successfully compiled IR expressions
+pub trait CompilePruningIr {
+    /// Compile this expression into a single pruning IR expression.
     ///
-    /// Returns a slice of all predicates that were successfully compiled into IR.
-    /// These can be used with [`IrRowFilter`](crate::IrRowFilter) for row-level filtering.
+    /// This is a convenience method that returns the first successfully compiled IR expression.
+    /// Use [`compile_all()`](Self::compile_all) if you need access to all compiled expressions
+    /// or detailed error information.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first compilation error if no IR expressions could be compiled.
     ///
     /// # Example
     /// ```no_run
-    /// # use aisle::PruneRequest;
-    /// # use datafusion_expr::{col, lit};
-    /// # use parquet::file::metadata::ParquetMetaData;
-    /// # use arrow_schema::Schema;
-    /// # use std::sync::Arc;
-    /// # let metadata: ParquetMetaData = todo!();
-    /// # let schema: Arc<Schema> = todo!();
-    /// let predicate = col("id").eq(lit(42i64));
-    /// let result = PruneRequest::new(&metadata, &schema)
-    ///     .with_predicate(&predicate)
-    ///     .prune();
+    /// use aisle::CompilePruningIr;
+    /// use arrow_schema::{DataType, Field, Schema};
+    /// use datafusion_expr::{col, lit};
     ///
-    /// let ir_exprs = result.compile_result().ir_exprs();
-    /// println!("Compiled {} predicates", ir_exprs.len());
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    ///
+    /// let ir = col("id").gt(lit(42i64)).compile(&schema)?;
+    /// println!("Compiled IR: {:?}", ir);
+    /// # Ok(())
+    /// # }
     /// ```
-    pub fn ir_exprs(&self) -> &[IrExpr] {
-        &self.prunable
+    fn compile(&self, schema: &Schema) -> Result<IrExpr, AisleError>;
+
+    /// Compile this expression into pruning IR, returning all results and errors.
+    ///
+    /// This is the full-featured compilation method that returns a [`AisleResult`]
+    /// containing all successfully compiled expressions and any errors encountered.
+    ///
+    /// Use this when you need:
+    /// - Access to all compiled expressions (for complex predicates)
+    /// - Detailed error reporting
+    /// - Best-effort compilation results
+    ///
+    /// # Example
+    /// ```no_run
+    /// use aisle::CompilePruningIr;
+    /// use arrow_schema::{DataType, Field, Schema};
+    /// use datafusion_expr::{col, lit};
+    ///
+    /// # fn example() {
+    /// let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    ///
+    /// let result = col("id").gt(lit(42i64)).compile_all(&schema);
+    /// println!("Compiled {} expressions", result.prunable_count());
+    /// println!("Encountered {} errors", result.error_count());
+    /// # }
+    /// ```
+    fn compile_all(&self, schema: &Schema) -> AisleResult;
+}
+
+impl CompilePruningIr for DfExpr {
+    fn compile(&self, schema: &Schema) -> Result<IrExpr, AisleError> {
+        let result = self.compile_all(schema);
+
+        result.ir_exprs().first().cloned().ok_or_else(|| {
+            // Return the first error if available, otherwise a generic error
+            result
+                .errors()
+                .first()
+                .cloned()
+                .unwrap_or_else(|| AisleError::UnsupportedExpr {
+                    expr_type: "No IR expression could be compiled from predicate".to_string(),
+                })
+        })
     }
 
-    /// Get the compilation errors
-    pub fn errors(&self) -> &[CompileError] {
-        &self.errors
-    }
-
-    /// Check if there are any compilation errors
-    pub fn has_errors(&self) -> bool {
-        !self.errors.is_empty()
-    }
-
-    /// Get the number of successfully compiled predicates
-    pub fn prunable_count(&self) -> usize {
-        self.prunable.len()
-    }
-
-    /// Get the number of compilation errors
-    pub fn error_count(&self) -> usize {
-        self.errors.len()
+    fn compile_all(&self, schema: &Schema) -> AisleResult {
+        compile_pruning_ir(self, schema)
     }
 }
 
-pub fn compile_pruning_ir(expr: &Expr, schema: &Schema) -> CompileResult {
+pub fn compile_pruning_ir(expr: &DfExpr, schema: &Schema) -> AisleResult {
     let schema_index = build_schema_path_index(schema);
     compile_pruning_ir_with_index(expr, schema, &schema_index)
 }
 
 pub(crate) fn compile_pruning_ir_with_index(
-    expr: &Expr,
+    expr: &DfExpr,
     schema: &Schema,
     schema_index: &SchemaPathIndex,
-) -> CompileResult {
-    let mut result = CompileResult::default();
+) -> AisleResult {
+    let mut result = AisleResult::default();
     for predicate in split_conjunction(expr) {
         match compile_expr(predicate, schema, schema_index) {
-            Ok(ir) => result.prunable.push(ir),
-            Err(err) => result.errors.push(err),
+            Ok(ir) => result.push_prunable(ir),
+            Err(err) => result.push_error(err),
         }
     }
     result
@@ -204,9 +209,10 @@ pub(crate) struct SchemaPathIndex {
 
 impl SchemaPathIndex {
     /// Resolve an unqualified column name (leaf name) to a canonical path.
-    fn resolve_unqualified(&self, name: &str) -> Result<(String, DataType), CompileError> {
+
+    fn resolve_unqualified(&self, name: &str) -> Result<(String, DataType), AisleError> {
         match self.leaf_to_paths.get(name) {
-            None => Err(CompileError::ColumnNotFound {
+            None => Err(AisleError::ColumnNotFound {
                 column_name: name.to_string(),
             }),
             Some(paths) if paths.len() == 1 => {
@@ -214,7 +220,7 @@ impl SchemaPathIndex {
                 let (data_type, _) = self.paths.get(path).unwrap();
                 Ok((path.clone(), data_type.clone()))
             }
-            Some(paths) => Err(CompileError::AmbiguousColumn {
+            Some(paths) => Err(AisleError::AmbiguousColumn {
                 column_name: name.to_string(),
                 candidates: paths.clone(),
             }),
@@ -222,7 +228,8 @@ impl SchemaPathIndex {
     }
 
     /// Resolve a column reference to a canonical path and data type
-    fn resolve_column(&self, column: &Column) -> Result<(String, DataType), CompileError> {
+
+    fn resolve_column(&self, column: &Column) -> Result<(String, DataType), AisleError> {
         match &column.relation {
             None => {
                 // Simple name - check for unique leaf name match
@@ -268,12 +275,12 @@ impl SchemaPathIndex {
                     match self.resolve_unqualified(&column.name) {
                         Ok((path, _)) if path != dotted => {
                             // Leaf uniquely resolves to a different path - this is ambiguous
-                            return Err(CompileError::AmbiguousColumn {
+                            return Err(AisleError::AmbiguousColumn {
                                 column_name: dotted.clone(),
                                 candidates: vec![path, dotted],
                             });
                         }
-                        Err(CompileError::AmbiguousColumn { candidates, .. }) => {
+                        Err(AisleError::AmbiguousColumn { candidates, .. }) => {
                             // Leaf is ambiguous - check if any candidate is a suffix of dotted
                             // Example: "a.b" vs "b" (b is suffix) -> ambiguous
                             // Example: "my_map.pairs.value" vs "my_map.key_value.value" (no suffix)
@@ -283,7 +290,7 @@ impl SchemaPathIndex {
                                 .any(|c| c != &dotted && dotted.ends_with(&format!(".{}", c)));
                             if has_suffix_candidate {
                                 // True ambiguity: dotted path vs shorter suffix path
-                                return Err(CompileError::AmbiguousColumn {
+                                return Err(AisleError::AmbiguousColumn {
                                     column_name: dotted,
                                     candidates,
                                 });
@@ -473,15 +480,15 @@ fn visit_field(
 }
 
 fn compile_expr(
-    expr: &Expr,
+    expr: &DfExpr,
     schema: &Schema,
     schema_index: &SchemaPathIndex,
-) -> Result<IrExpr, CompileError> {
+) -> Result<IrExpr, AisleError> {
     match expr {
-        Expr::Alias(alias) => compile_expr(&alias.expr, schema, schema_index),
-        Expr::Literal(ScalarValue::Boolean(Some(true)), _) => Ok(IrExpr::True),
-        Expr::Literal(ScalarValue::Boolean(Some(false)), _) => Ok(IrExpr::False),
-        Expr::BinaryExpr(BinaryExpr { left, op, right }) => match op {
+        DfExpr::Alias(alias) => compile_expr(&alias.expr, schema, schema_index),
+        DfExpr::Literal(ScalarValue::Boolean(Some(true)), _) => Ok(IrExpr::True),
+        DfExpr::Literal(ScalarValue::Boolean(Some(false)), _) => Ok(IrExpr::False),
+        DfExpr::BinaryExpr(BinaryExpr { left, op, right }) => match op {
             Operator::And => {
                 let left_ir = compile_expr(left, schema, schema_index)?;
                 let right_ir = compile_expr(right, schema, schema_index)?;
@@ -499,21 +506,20 @@ fn compile_expr(
             | Operator::Gt
             | Operator::GtEq => {
                 let (column, value, op) = extract_column_literal(left, right, *op, schema_index)?;
-                let rule = IrExpr::Cmp { column, op, value };
-                Ok(with_bloom_if_applicable(rule))
+                Ok(IrExpr::Cmp { column, op, value })
             }
-            _ => Err(CompileError::UnsupportedOperator {
+            _ => Err(AisleError::UnsupportedOperator {
                 operator: operator_symbol(op).to_string(),
             }),
         },
-        Expr::Between(Between {
+        DfExpr::Between(Between {
             expr,
             negated,
             low,
             high,
         }) => {
             if *negated {
-                return Err(CompileError::NegatedNotSupported {
+                return Err(AisleError::NegatedNotSupported {
                     predicate_type: "BETWEEN".to_string(),
                 });
             }
@@ -523,7 +529,7 @@ fn compile_expr(
             let low_lit = extract_literal(low)?;
             let low = low_lit
                 .cast_to(&data_type)
-                .map_err(|e| CompileError::TypeCastError {
+                .map_err(|e| AisleError::TypeCastError {
                     literal_type: low_lit.data_type().clone(),
                     target_type: data_type.clone(),
                     reason: e.to_string(),
@@ -531,7 +537,7 @@ fn compile_expr(
             let high_lit = extract_literal(high)?;
             let high = high_lit
                 .cast_to(&data_type)
-                .map_err(|e| CompileError::TypeCastError {
+                .map_err(|e| AisleError::TypeCastError {
                     literal_type: high_lit.data_type().clone(),
                     target_type: data_type.clone(),
                     reason: e.to_string(),
@@ -543,13 +549,13 @@ fn compile_expr(
                 inclusive: true,
             })
         }
-        Expr::InList(InList {
+        DfExpr::InList(InList {
             expr,
             list,
             negated,
         }) => {
             if *negated {
-                return Err(CompileError::NegatedNotSupported {
+                return Err(AisleError::NegatedNotSupported {
                     predicate_type: "IN".to_string(),
                 });
             }
@@ -561,17 +567,16 @@ fn compile_expr(
                 let lit_val = extract_literal(item)?;
                 let lit = lit_val
                     .cast_to(&data_type)
-                    .map_err(|e| CompileError::TypeCastError {
+                    .map_err(|e| AisleError::TypeCastError {
                         literal_type: lit_val.data_type().clone(),
                         target_type: data_type.clone(),
                         reason: e.to_string(),
                     })?;
                 values.push(lit);
             }
-            let rule = IrExpr::InList { column, values };
-            Ok(with_bloom_if_applicable(rule))
+            Ok(IrExpr::InList { column, values })
         }
-        Expr::Like(Like {
+        DfExpr::Like(Like {
             negated,
             expr,
             pattern,
@@ -579,17 +584,17 @@ fn compile_expr(
             case_insensitive,
         }) => {
             if *negated {
-                return Err(CompileError::NegatedNotSupported {
+                return Err(AisleError::NegatedNotSupported {
                     predicate_type: "LIKE".to_string(),
                 });
             }
             if *case_insensitive {
-                return Err(CompileError::UnsupportedExpr {
+                return Err(AisleError::UnsupportedExpr {
                     expr_type: "ILIKE expressions are not supported".to_string(),
                 });
             }
             if escape_char.is_some() {
-                return Err(CompileError::UnsupportedExpr {
+                return Err(AisleError::UnsupportedExpr {
                     expr_type: "LIKE with escape characters is not supported".to_string(),
                 });
             }
@@ -601,7 +606,7 @@ fn compile_expr(
                 data_type,
                 DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
             ) {
-                return Err(CompileError::UnsupportedExpr {
+                return Err(AisleError::UnsupportedExpr {
                     expr_type: "LIKE is only supported for string columns".to_string(),
                 });
             }
@@ -612,20 +617,20 @@ fn compile_expr(
                 | ScalarValue::LargeUtf8(Some(s))
                 | ScalarValue::Utf8View(Some(s)) => s,
                 _ => {
-                    return Err(CompileError::UnsupportedExpr {
+                    return Err(AisleError::UnsupportedExpr {
                         expr_type: "LIKE pattern must be a string literal".to_string(),
                     });
                 }
             };
 
             match like_pattern_to_rule(&column, &pattern, &data_type) {
-                Some(rule) => Ok(with_bloom_if_applicable(rule)),
-                None => Err(CompileError::UnsupportedExpr {
+                Some(rule) => Ok(rule),
+                None => Err(AisleError::UnsupportedExpr {
                     expr_type: format!("Unsupported LIKE pattern: '{pattern}'"),
                 }),
             }
         }
-        Expr::IsNull(expr) => {
+        DfExpr::IsNull(expr) => {
             let (column_expr, cast_type) = extract_column_with_cast(expr)?;
             let (column, data_type) = schema_index.resolve_column(&column_expr)?;
             ensure_noop_cast(&column_expr, &data_type, cast_type)?;
@@ -634,7 +639,7 @@ fn compile_expr(
                 negated: false,
             })
         }
-        Expr::IsNotNull(expr) => {
+        DfExpr::IsNotNull(expr) => {
             let (column_expr, cast_type) = extract_column_with_cast(expr)?;
             let (column, data_type) = schema_index.resolve_column(&column_expr)?;
             ensure_noop_cast(&column_expr, &data_type, cast_type)?;
@@ -643,45 +648,14 @@ fn compile_expr(
                 negated: true,
             })
         }
-        Expr::Not(inner) => Ok(IrExpr::Not(Box::new(compile_expr(
+        DfExpr::Not(inner) => Ok(IrExpr::Not(Box::new(compile_expr(
             inner,
             schema,
             schema_index,
         )?))),
-        _ => Err(CompileError::UnsupportedExpr {
+        _ => Err(AisleError::UnsupportedExpr {
             expr_type: expr_type_name(expr),
         }),
-    }
-}
-
-fn with_bloom_if_applicable(rule: IrExpr) -> IrExpr {
-    match rule {
-        IrExpr::Cmp {
-            column,
-            op: CmpOp::Eq,
-            value,
-        } => {
-            let bloom = IrExpr::BloomFilterEq {
-                column: column.clone(),
-                value: value.clone(),
-            };
-            IrExpr::And(vec![
-                IrExpr::Cmp {
-                    column,
-                    op: CmpOp::Eq,
-                    value,
-                },
-                bloom,
-            ])
-        }
-        IrExpr::InList { column, values } => {
-            let bloom = IrExpr::BloomFilterInList {
-                column: column.clone(),
-                values: values.clone(),
-            };
-            IrExpr::And(vec![IrExpr::InList { column, values }, bloom])
-        }
-        other => other,
     }
 }
 
@@ -732,60 +706,60 @@ fn like_pattern_to_rule(column: &str, pattern: &str, data_type: &DataType) -> Op
     })
 }
 
-fn extract_column_with_cast(expr: &Expr) -> Result<(Column, Option<DataType>), CompileError> {
+fn extract_column_with_cast(expr: &DfExpr) -> Result<(Column, Option<DataType>), AisleError> {
     match expr {
-        Expr::Column(col) => Ok((col.clone(), None)),
-        Expr::Alias(alias) => extract_column_with_cast(&alias.expr),
-        Expr::Cast(cast) => {
+        DfExpr::Column(col) => Ok((col.clone(), None)),
+        DfExpr::Alias(alias) => extract_column_with_cast(&alias.expr),
+        DfExpr::Cast(cast) => {
             let (column, _) = extract_column_with_cast(&cast.expr)?;
             Ok((column, Some(cast.data_type.clone())))
         }
-        Expr::TryCast(cast) => {
+        DfExpr::TryCast(cast) => {
             let (column, _) = extract_column_with_cast(&cast.expr)?;
             Ok((column, Some(cast.data_type.clone())))
         }
-        _ => Err(CompileError::NotAColumn {
+        _ => Err(AisleError::NotAColumn {
             found: expr_type_name(expr),
         }),
     }
 }
 
-fn extract_literal(expr: &Expr) -> Result<ScalarValue, CompileError> {
+fn extract_literal(expr: &DfExpr) -> Result<ScalarValue, AisleError> {
     match expr {
-        Expr::Literal(value, _) => Ok(value.clone()),
-        Expr::Alias(alias) => extract_literal(&alias.expr),
-        Expr::Cast(cast) => {
+        DfExpr::Literal(value, _) => Ok(value.clone()),
+        DfExpr::Alias(alias) => extract_literal(&alias.expr),
+        DfExpr::Cast(cast) => {
             let literal = extract_literal(&cast.expr)?;
             literal
                 .cast_to(&cast.data_type)
-                .map_err(|e| CompileError::TypeCastError {
+                .map_err(|e| AisleError::TypeCastError {
                     literal_type: literal.data_type().clone(),
                     target_type: cast.data_type.clone(),
                     reason: e.to_string(),
                 })
         }
-        Expr::TryCast(cast) => {
+        DfExpr::TryCast(cast) => {
             let literal = extract_literal(&cast.expr)?;
             literal
                 .cast_to(&cast.data_type)
-                .map_err(|e| CompileError::TypeCastError {
+                .map_err(|e| AisleError::TypeCastError {
                     literal_type: literal.data_type().clone(),
                     target_type: cast.data_type.clone(),
                     reason: e.to_string(),
                 })
         }
-        _ => Err(CompileError::NotALiteral {
+        _ => Err(AisleError::NotALiteral {
             found: expr_type_name(expr),
         }),
     }
 }
 
 fn extract_column_literal(
-    left: &Expr,
-    right: &Expr,
+    left: &DfExpr,
+    right: &DfExpr,
     op: Operator,
     schema_index: &SchemaPathIndex,
-) -> Result<(String, ScalarValue, CmpOp), CompileError> {
+) -> Result<(String, ScalarValue, CmpOp), AisleError> {
     // Try: column op literal
     if let (Ok((column_expr, cast_type)), Ok(literal)) =
         (extract_column_with_cast(left), extract_literal(right))
@@ -794,7 +768,7 @@ fn extract_column_literal(
         ensure_noop_cast(&column_expr, &data_type, cast_type)?;
         let value = literal
             .cast_to(&data_type)
-            .map_err(|e| CompileError::TypeCastError {
+            .map_err(|e| AisleError::TypeCastError {
                 literal_type: literal.data_type().clone(),
                 target_type: data_type.clone(),
                 reason: e.to_string(),
@@ -809,14 +783,14 @@ fn extract_column_literal(
         ensure_noop_cast(&column_expr, &data_type, cast_type)?;
         let value = literal
             .cast_to(&data_type)
-            .map_err(|e| CompileError::TypeCastError {
+            .map_err(|e| AisleError::TypeCastError {
                 literal_type: literal.data_type().clone(),
                 target_type: data_type.clone(),
                 reason: e.to_string(),
             })?;
         return Ok((column, value, map_op(op)?.flip()));
     }
-    Err(CompileError::UnsupportedExpr {
+    Err(AisleError::UnsupportedExpr {
         expr_type: "column-literal comparison required".to_string(),
     })
 }
@@ -825,10 +799,10 @@ fn ensure_noop_cast(
     column_expr: &Column,
     data_type: &DataType,
     cast_type: Option<DataType>,
-) -> Result<(), CompileError> {
+) -> Result<(), AisleError> {
     if let Some(cast_type) = cast_type {
         if cast_type != *data_type {
-            return Err(CompileError::UnsupportedExpr {
+            return Err(AisleError::UnsupportedExpr {
                 expr_type: format!(
                     "CAST on column '{}' to {:?} is not supported",
                     column_expr.name, cast_type
@@ -839,7 +813,7 @@ fn ensure_noop_cast(
     Ok(())
 }
 
-fn map_op(op: Operator) -> Result<CmpOp, CompileError> {
+fn map_op(op: Operator) -> Result<CmpOp, AisleError> {
     match op {
         Operator::Eq => Ok(CmpOp::Eq),
         Operator::NotEq => Ok(CmpOp::NotEq),
@@ -847,24 +821,28 @@ fn map_op(op: Operator) -> Result<CmpOp, CompileError> {
         Operator::LtEq => Ok(CmpOp::LtEq),
         Operator::Gt => Ok(CmpOp::Gt),
         Operator::GtEq => Ok(CmpOp::GtEq),
-        _ => Err(CompileError::UnsupportedOperator {
+        _ => Err(AisleError::UnsupportedOperator {
             operator: operator_symbol(&op).to_string(),
         }),
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "datafusion"))]
 mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use datafusion_expr::{
         col,
         expr::{Cast, TryCast},
         lit,
+        Expr as DfExpr,
     };
 
     use super::*;
 
-    fn find_rule<'a>(rule: &'a IrExpr, predicate: &impl Fn(&IrExpr) -> bool) -> Option<&'a IrExpr> {
+    fn find_rule<'a>(
+        rule: &'a IrExpr,
+        predicate: &impl Fn(&IrExpr) -> bool,
+    ) -> Option<&'a IrExpr> {
         if predicate(rule) {
             return Some(rule);
         }
@@ -883,10 +861,8 @@ mod tests {
     }
 
     fn find_in_list(rule: &IrExpr) -> &IrExpr {
-        find_rule(rule, &|candidate| {
-            matches!(candidate, IrExpr::InList { .. })
-        })
-        .expect("Expected InList expression")
+        find_rule(rule, &|candidate| matches!(candidate, IrExpr::InList { .. }))
+            .expect("Expected InList expression")
     }
 
     #[test]
@@ -905,7 +881,7 @@ mod tests {
     fn compile_unsupported_operator() {
         let schema = Schema::new(vec![Field::new("a", DataType::Int64, false)]);
         // Addition is not supported for pruning
-        let expr = Expr::BinaryExpr(BinaryExpr {
+        let expr = DfExpr::BinaryExpr(BinaryExpr {
             left: Box::new(col("a")),
             op: Operator::Plus,
             right: Box::new(lit(5)),
@@ -915,7 +891,7 @@ mod tests {
         assert_eq!(result.errors.len(), 1);
         assert!(matches!(
             result.errors[0],
-            CompileError::UnsupportedOperator { .. }
+            AisleError::UnsupportedOperator { .. }
         ));
     }
 
@@ -928,7 +904,7 @@ mod tests {
         assert_eq!(result.errors.len(), 1);
         assert!(matches!(
             result.errors[0],
-            CompileError::ColumnNotFound { .. }
+            AisleError::ColumnNotFound { .. }
         ));
     }
 
@@ -941,7 +917,7 @@ mod tests {
         assert_eq!(result.errors.len(), 1);
         assert!(matches!(
             result.errors[0],
-            CompileError::NegatedNotSupported { .. }
+            AisleError::NegatedNotSupported { .. }
         ));
     }
 
@@ -952,7 +928,7 @@ mod tests {
             Field::new("b", DataType::Int64, false),
         ]);
         // First predicate is valid, second is not (addition unsupported)
-        let unsupported = Expr::BinaryExpr(BinaryExpr {
+        let unsupported = DfExpr::BinaryExpr(BinaryExpr {
             left: Box::new(col("b")),
             op: Operator::Plus,
             right: Box::new(lit(2)),
@@ -963,7 +939,7 @@ mod tests {
         assert_eq!(result.errors.len(), 1);
         assert!(matches!(
             result.errors[0],
-            CompileError::UnsupportedOperator { .. }
+            AisleError::UnsupportedOperator { .. }
         ));
     }
 
@@ -972,7 +948,7 @@ mod tests {
         let schema = Schema::new(vec![Field::new("a", DataType::Int64, false)]);
 
         // Test UnsupportedOperator error message
-        let expr = Expr::BinaryExpr(BinaryExpr {
+        let expr = DfExpr::BinaryExpr(BinaryExpr {
             left: Box::new(col("a")),
             op: Operator::Plus,
             right: Box::new(lit(5)),
@@ -1062,7 +1038,7 @@ mod tests {
         assert_eq!(result.errors.len(), 1);
         assert!(matches!(
             &result.errors[0],
-            CompileError::AmbiguousColumn { column_name, candidates }
+            AisleError::AmbiguousColumn { column_name, candidates }
             if column_name == "b" && candidates.len() == 2
         ));
     }
@@ -1105,7 +1081,7 @@ mod tests {
         assert_eq!(result.errors.len(), 1);
         assert!(matches!(
             &result.errors[0],
-            CompileError::AmbiguousColumn { column_name, .. }
+            AisleError::AmbiguousColumn { column_name, .. }
             if column_name == "a.b"
         ));
     }
@@ -1186,7 +1162,7 @@ mod tests {
         assert_eq!(result.errors.len(), 1);
         assert!(matches!(
             &result.errors[0],
-            CompileError::ColumnNotFound { column_name }
+            AisleError::ColumnNotFound { column_name }
             if column_name == "a.b.c.d.e"
         ));
     }
@@ -1491,7 +1467,7 @@ mod tests {
     #[test]
     fn compile_like_prefix_to_starts_with() {
         let schema = Schema::new(vec![Field::new("s", DataType::Utf8, false)]);
-        let expr = Expr::Like(Like::new(
+        let expr = DfExpr::Like(Like::new(
             false,
             Box::new(col("s")),
             Box::new(lit("foo%")),
@@ -1511,7 +1487,7 @@ mod tests {
     #[test]
     fn compile_like_exact_to_eq() {
         let schema = Schema::new(vec![Field::new("s", DataType::Utf8, false)]);
-        let expr = Expr::Like(Like::new(
+        let expr = DfExpr::Like(Like::new(
             false,
             Box::new(col("s")),
             Box::new(lit("bar")),
@@ -1534,7 +1510,7 @@ mod tests {
     #[test]
     fn compile_like_unsupported_pattern() {
         let schema = Schema::new(vec![Field::new("s", DataType::Utf8, false)]);
-        let expr = Expr::Like(Like::new(
+        let expr = DfExpr::Like(Like::new(
             false,
             Box::new(col("s")),
             Box::new(lit("f%o")),
@@ -1549,10 +1525,10 @@ mod tests {
     #[test]
     fn compile_cast_literal_in_comparison() {
         let schema = Schema::new(vec![Field::new("a", DataType::Int64, false)]);
-        let expr = Expr::BinaryExpr(BinaryExpr {
+        let expr = DfExpr::BinaryExpr(BinaryExpr {
             left: Box::new(col("a")),
             op: Operator::Eq,
-            right: Box::new(Expr::Cast(Cast::new(Box::new(lit("42")), DataType::Int64))),
+            right: Box::new(DfExpr::Cast(Cast::new(Box::new(lit("42")), DataType::Int64))),
         });
         let result = compile_pruning_ir(&expr, &schema);
         assert_eq!(result.prunable.len(), 1);
@@ -1562,10 +1538,10 @@ mod tests {
     #[test]
     fn compile_try_cast_literal_in_comparison() {
         let schema = Schema::new(vec![Field::new("a", DataType::Int64, false)]);
-        let expr = Expr::BinaryExpr(BinaryExpr {
+        let expr = DfExpr::BinaryExpr(BinaryExpr {
             left: Box::new(col("a")),
             op: Operator::Eq,
-            right: Box::new(Expr::TryCast(TryCast::new(
+            right: Box::new(DfExpr::TryCast(TryCast::new(
                 Box::new(lit("7")),
                 DataType::Int64,
             ))),
@@ -1578,10 +1554,10 @@ mod tests {
     #[test]
     fn compile_try_cast_literal_invalid() {
         let schema = Schema::new(vec![Field::new("a", DataType::Int64, false)]);
-        let expr = Expr::BinaryExpr(BinaryExpr {
+        let expr = DfExpr::BinaryExpr(BinaryExpr {
             left: Box::new(col("a")),
             op: Operator::Eq,
-            right: Box::new(Expr::TryCast(TryCast::new(
+            right: Box::new(DfExpr::TryCast(TryCast::new(
                 Box::new(lit("not-a-number")),
                 DataType::Int64,
             ))),
@@ -1594,8 +1570,8 @@ mod tests {
     #[test]
     fn compile_cast_column_noop() {
         let schema = Schema::new(vec![Field::new("a", DataType::Int64, false)]);
-        let expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Cast(Cast::new(Box::new(col("a")), DataType::Int64))),
+        let expr = DfExpr::BinaryExpr(BinaryExpr {
+            left: Box::new(DfExpr::Cast(Cast::new(Box::new(col("a")), DataType::Int64))),
             op: Operator::Gt,
             right: Box::new(lit(10)),
         });
@@ -1607,14 +1583,30 @@ mod tests {
     #[test]
     fn compile_cast_column_type_change_unsupported() {
         let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
-        let expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Cast(Cast::new(Box::new(col("a")), DataType::Int64))),
+        let expr = DfExpr::BinaryExpr(BinaryExpr {
+            left: Box::new(DfExpr::Cast(Cast::new(Box::new(col("a")), DataType::Int64))),
             op: Operator::Gt,
             right: Box::new(lit(10i64)),
         });
         let result = compile_pruning_ir(&expr, &schema);
         assert_eq!(result.prunable.len(), 0);
         assert_eq!(result.errors.len(), 1);
+    }
+
+    #[test]
+    fn bloom_filters_not_added_in_negated_context() {
+        let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+
+        // Compiler should emit pure IR without bloom filters
+        let pos_expr = col("id").eq(lit(42i64));
+        let pos_result = compile_pruning_ir(&pos_expr, &schema);
+        assert_eq!(pos_result.prunable.len(), 1);
+        assert!(matches!(pos_result.prunable[0], IrExpr::Cmp { .. }));
+
+        let neg_expr = DfExpr::Not(Box::new(col("id").eq(lit(42i64))));
+        let neg_result = compile_pruning_ir(&neg_expr, &schema);
+        assert_eq!(neg_result.prunable.len(), 1);
+        assert!(matches!(neg_result.prunable[0], IrExpr::Not(_)));
     }
 }
 

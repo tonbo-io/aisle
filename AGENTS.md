@@ -51,7 +51,7 @@ Apply to ParquetRecordBatchReader
 ### Module Structure
 
 - **`compile`**: DataFusion Expr -> Pruning IR compilation
-- **`ir`**: Internal representation for metadata-evaluable predicates
+- **`expr`**: Internal representation for metadata-evaluable predicates
 - **`prune`**: Core pruning logic (row-group + page-level)
   - `request`: Builder API (`PruneRequest`)
   - `result`: Pruning results
@@ -71,7 +71,7 @@ Apply to ParquetRecordBatchReader
 **Sync API** (no bloom filters):
 ```rust
 let result = PruneRequest::new(&metadata, &schema)
-    .with_predicate(&predicate)
+    .with_df_predicate(&predicate)
     .enable_page_index(true)
     .prune();
 ```
@@ -81,7 +81,7 @@ let result = PruneRequest::new(&metadata, &schema)
 let metadata = builder.metadata().clone();
 let schema = builder.schema().clone();
 let result = PruneRequest::new(&metadata, &schema)
-    .with_predicate(&predicate)
+    .with_df_predicate(&predicate)
     .enable_bloom_filter(true)
     .prune_async(&mut builder).await;
 ```
@@ -173,7 +173,7 @@ Evaluation uses three-valued logic:
 
 ### Adding New Predicates
 
-1. Add IR variant in `src/ir.rs`
+1. Add IR variant in `src/expr.rs`
 2. Add compilation in `src/compile.rs`
 3. Add row-group evaluator in `src/prune/<predicate>.rs`
 4. Add page-level evaluator in same file

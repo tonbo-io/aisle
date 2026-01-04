@@ -14,9 +14,9 @@ use parquet::arrow::arrow_reader::RowSelection;
 
 pub(in crate::prune) use super::context::RowGroupContext;
 use super::{between, bloom, cmp, in_list, is_null, page, page::PagePruning, starts_with};
-use crate::ir::{IrExpr, TriState};
+use crate::expr::{Expr, TriState};
 
-pub(super) fn eval_conjunction(predicates: &[IrExpr], ctx: &RowGroupContext<'_>) -> TriState {
+pub(super) fn eval_conjunction(predicates: &[Expr], ctx: &RowGroupContext<'_>) -> TriState {
     let mut result = TriState::True;
     for predicate in predicates {
         result = result.and(eval_expr(predicate, ctx));
@@ -27,31 +27,31 @@ pub(super) fn eval_conjunction(predicates: &[IrExpr], ctx: &RowGroupContext<'_>)
     result
 }
 
-pub(super) fn eval_expr(expr: &IrExpr, ctx: &RowGroupContext<'_>) -> TriState {
+pub(super) fn eval_expr(expr: &Expr, ctx: &RowGroupContext<'_>) -> TriState {
     match expr {
-        IrExpr::True => TriState::True,
-        IrExpr::False => TriState::False,
-        IrExpr::Cmp { column, op, value } => cmp::eval_cmp(column, *op, value, ctx),
-        IrExpr::Between {
+        Expr::True => TriState::True,
+        Expr::False => TriState::False,
+        Expr::Cmp { column, op, value } => cmp::eval_cmp(column, *op, value, ctx),
+        Expr::Between {
             column,
             low,
             high,
             inclusive,
         } => between::eval_between(column, low, high, *inclusive, ctx),
-        IrExpr::InList { column, values } => in_list::eval_in_list(column, values, ctx),
-        IrExpr::BloomFilterEq { column, value } => bloom::eval_bloom_eq(column, value, ctx),
-        IrExpr::BloomFilterInList { column, values } => {
+        Expr::InList { column, values } => in_list::eval_in_list(column, values, ctx),
+        Expr::BloomFilterEq { column, value } => bloom::eval_bloom_eq(column, value, ctx),
+        Expr::BloomFilterInList { column, values } => {
             bloom::eval_bloom_in_list(column, values, ctx)
         }
-        IrExpr::StartsWith { column, prefix } => starts_with::eval_starts_with(column, prefix, ctx),
-        IrExpr::IsNull { column, negated } => is_null::eval_is_null(column, *negated, ctx),
-        IrExpr::And(parts) => parts
+        Expr::StartsWith { column, prefix } => starts_with::eval_starts_with(column, prefix, ctx),
+        Expr::IsNull { column, negated } => is_null::eval_is_null(column, *negated, ctx),
+        Expr::And(parts) => parts
             .iter()
             .fold(TriState::True, |acc, expr| acc.and(eval_expr(expr, ctx))),
-        IrExpr::Or(parts) => parts
+        Expr::Or(parts) => parts
             .iter()
             .fold(TriState::False, |acc, expr| acc.or(eval_expr(expr, ctx))),
-        IrExpr::Not(inner) => eval_expr(inner, ctx).not(),
+        Expr::Not(inner) => eval_expr(inner, ctx).not(),
     }
 }
 
@@ -62,7 +62,7 @@ pub(super) fn eval_expr(expr: &IrExpr, ctx: &RowGroupContext<'_>) -> TriState {
 /// to build the page selection. This is safe because unsupported predicates
 /// will be evaluated during actual data reading.
 pub(super) fn page_selection_for_predicates(
-    predicates: &[IrExpr],
+    predicates: &[Expr],
     ctx: &RowGroupContext<'_>,
 ) -> Option<RowSelection> {
     let mut selection: Option<PagePruning> = None;
@@ -91,28 +91,26 @@ pub(super) fn page_selection_for_predicates(
 /// - **BETWEEN**: Treated as AND of bounds, so best-effort (can use partial bounds)
 /// - **NOT**: Supported only when the inner selection is exact (no unknown pages)
 pub(super) fn page_selection_for_expr(
-    expr: &IrExpr,
+    expr: &Expr,
     ctx: &RowGroupContext<'_>,
 ) -> Option<PagePruning> {
     match expr {
-        IrExpr::Cmp { column, op, value } => cmp::page_selection_for_cmp(column, *op, value, ctx),
-        IrExpr::Between {
+        Expr::Cmp { column, op, value } => cmp::page_selection_for_cmp(column, *op, value, ctx),
+        Expr::Between {
             column,
             low,
             high,
             inclusive,
         } => between::page_selection_for_between(column, low, high, *inclusive, ctx),
-        IrExpr::InList { column, values } => {
-            in_list::page_selection_for_in_list(column, values, ctx)
-        }
-        IrExpr::BloomFilterEq { .. } | IrExpr::BloomFilterInList { .. } => None,
-        IrExpr::StartsWith { column, prefix } => {
+        Expr::InList { column, values } => in_list::page_selection_for_in_list(column, values, ctx),
+        Expr::BloomFilterEq { .. } | Expr::BloomFilterInList { .. } => None,
+        Expr::StartsWith { column, prefix } => {
             starts_with::page_selection_for_starts_with(column, prefix, ctx)
         }
-        IrExpr::IsNull { column, negated } => {
+        Expr::IsNull { column, negated } => {
             is_null::page_selection_for_is_null(column, *negated, ctx)
         }
-        IrExpr::And(parts) => {
+        Expr::And(parts) => {
             // Best-effort AND: skip unsupported, intersect supported
             let mut selection: Option<PagePruning> = None;
             let mut all_supported = true;
@@ -136,7 +134,7 @@ pub(super) fn page_selection_for_expr(
                 selection
             })
         }
-        IrExpr::Or(parts) => {
+        Expr::Or(parts) => {
             // All-or-nothing OR: return None if any part unsupported
             let mut selection: Option<PagePruning> = None;
             for part in parts {
@@ -148,7 +146,7 @@ pub(super) fn page_selection_for_expr(
             }
             selection
         }
-        IrExpr::Not(inner) => {
+        Expr::Not(inner) => {
             let inner = page_selection_for_expr(inner, ctx)?;
             // Safety check: Only invert exact selections
             // If the inner selection has Unknown pages (exact=false), those pages were
@@ -162,6 +160,6 @@ pub(super) fn page_selection_for_expr(
             // Inverted selection is always exact if input was exact
             Some(PagePruning::new(selection, true))
         }
-        IrExpr::True | IrExpr::False => None, // Unsupported: no column to prune on
+        Expr::True | Expr::False => None, // Unsupported: no column to prune on
     }
 }
