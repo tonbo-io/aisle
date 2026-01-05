@@ -8,7 +8,7 @@
 
 **Metadata-driven Parquet pruning for Rust: Skip irrelevant data before reading**
 
-Aisle evaluates DataFusion predicates against Parquet metadata (row-group statistics, page indexes, bloom filters) to determine which data to skip, dramatically reducing I/O for selective queries without modifying the upstream `parquet` crate.
+Aisle evaluates pruning predicates against Parquet metadata (row-group statistics, page indexes, bloom filters) to determine which data to skip, dramatically reducing I/O for selective queries without modifying the upstream `parquet` crate.
 
 📖 **[Read the full documentation on docs.rs](https://docs.rs/aisle)**
 
@@ -121,25 +121,38 @@ Enables `RowFilter` for exact row-level filtering using Parquet's built-in `RowF
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  Your Query                         │
+│                  Your Predicate                     │
 │   WHERE user_id >= 1000 AND age < 30                │
-└─────────────────────┬───────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────┐
-│              Aisle Compiler                         │
-│   Converts DataFusion Expr -> Pruning IR            │
-│   (supports =, !=, <, >, <=, >=, BETWEEN, IN,       │
-│    IS NULL, LIKE 'prefix%', AND, OR, NOT, CAST)     │
-└─────────────────────┬───────────────────────────────┘
-                      │
-                      ▼
+└────────────┬────────────────────────────────────────┘
+             │
+             │  Two entry points:
+             │
+             ├─────────────┐
+             │             │
+             ▼             ▼
+┌────────────────────┐  ┌──────────────────────────────┐
+│  Aisle Native Expr │  │  DataFusion Expr (optional)  │
+│  (direct usage)    │  │  (with "datafusion" feature) │
+└────────┬───────────┘  └────────┬─────────────────────┘
+         │                       │
+         │                       ▼
+         │              ┌───────────────────┐
+         │              │  Aisle Compiler   │
+         │              │  DF Expr → Aisle │
+         │              └────────┬──────────┘
+         │                       │
+         └───────────┬───────────┘
+                     │
+                     ▼
 ┌─────────────────────────────────────────────────────┐
 │          Metadata Evaluation                        │
 │  • Row-group statistics (min/max, null_count)       │
 │  • Page indexes (page-level min/max)                │
 │  • Bloom filters (definite absence checks)          │
 │  • Tri-state logic (True/False/Unknown)             │
+│                                                     │
+│  Supports: =, !=, <, >, <=, >=, BETWEEN, IN,        │
+│            IS NULL, LIKE 'prefix%', AND, OR, NOT    │
 └─────────────────────┬───────────────────────────────┘
                       │
                       ▼
