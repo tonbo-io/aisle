@@ -1,4 +1,5 @@
 # Aisle
+<img width="1138" height="177" alt="aisle banner (1)" src="https://github.com/user-attachments/assets/f5f873b3-018e-4735-8166-0b945b61dfbd" />
 
 <p align="left">
   <a href="https://crates.io/crates/aisle/"><img src="https://img.shields.io/crates/v/aisle.svg"></a>
