@@ -2,16 +2,44 @@
 
 ## What is this project?
 
-Aisle is a Rust library that adds metadata-driven filter pushdown for Parquet reads without modifying the upstream `parquet` crate. It accepts DataFusion logical expressions, compiles them into a minimal pruning IR, evaluates that IR against Parquet metadata (row-group stats, page indexes, bloom filters), and returns row-group and row-level selections to guide the Parquet reader.
+Aisle is a Rust library that provides **logical-level metadata pruning** for Parquet files. It accepts logical expressions (DataFusion `Expr` or native `aisle::Expr`), evaluates them against Parquet metadata (row-group stats, page indexes, bloom filters), and returns row-group and row-level selections to guide the Parquet reader.
+
+**Positioning**: Aisle operates at the **storage layer** (logical expressions → metadata pruning), while DataFusion's `datafusion-pruning` operates at the **execution layer** (physical expressions → metadata pruning). They're complementary, not competing.
 
 ## Why do we need it?
 
-Parquet readers can skip IO only when they are given metadata-derived selections. Without that, filters must read predicate columns at least once before pruning. Aisle fills the gap by:
-- Translating logical predicates into metadata-evaluable constraints
-- Pruning row groups and (optionally) pages before reading data
-- Remaining non-invasive to upstream crates
+### The Ecosystem Gap
 
-**Result**: I/O reduction for selective queries without modifying the Parquet format
+**DataFusion pruning exists** (`datafusion-pruning` v51.0+), but only at the physical layer:
+- Requires `PhysicalExpr` (needs full DataFusion physical planning)
+- Dependencies: 569 crates (includes physical-expr, physical-plan, execution)
+- Binary size: ~15-20 MB
+- Use case: For DataFusion users with physical expressions
+
+**Aisle fills the logical-layer gap**:
+- Accepts logical `Expr` (no physical planning required)
+- Dependencies: 295 crates (parquet, arrow, datafusion-common only)
+- Binary size: ~0.8 MB
+- Use case: For storage engines without execution machinery
+
+### Critical for S3-Based Storage Engines
+
+**Local disk** (RocksDB, LevelDB):
+- Read latency: ~100 µs
+- Sequential reads are cheap
+- Metadata pruning is a **nice optimization**
+
+**S3/Object storage** (Tonbo, cloud-native LSM):
+- Read latency: 50-100 ms (500-1000x slower!)
+- Each HTTP request has overhead
+- Metadata pruning is **critical for viability**
+
+Example: Query across 1000 SST files on S3
+- Without pruning: 1000 × 100ms = 100 seconds
+- With Aisle (99% pruning): ~1 second metadata + 10 files × 100ms = ~2 seconds
+- **50x speedup** by avoiding unnecessary S3 reads
+
+**Result**: Enables metadata-driven I/O reduction for storage engines that can't use DataFusion's execution layer
 
 ## How does it work?
 
@@ -186,11 +214,22 @@ Evaluation uses three-valued logic:
 2. Add comparison logic in `src/prune/cmp.rs`
 3. Add tests covering all predicate types
 
-### Performance Considerations
+### Performance Characteristics
 
-- Metadata evaluation overhead: Typically <1ms per row group
+**Metadata evaluation overhead**: Very low (~38 µs for 100 row groups)
+
+**Compared to DataFusion** (apples-to-apples, same features):
+
+| Configuration | DataFusion | Aisle | Difference |
+|---------------|-----------|-------|------------|
+| Page index only | 3.6 ms | 18.2 ms | 5x slower |
+| Bloom filter only | 8.1 ms | 13.7 ms | 1.7x slower |
+| Both (page + bloom) | 8.1 ms | 13.0 ms | 1.6x slower |
+
+**Optimization opportunities**:
 - Page-level pruning: Avoid full-page decoding when indexes enable pruning
 - Bloom filters: Batch loading when possible (see `AsyncBloomFilterProvider::bloom_filters_batch`)
+- Reuse `Pruner` across queries to amortize compilation cost
 
 ## Known Limitations
 
@@ -206,6 +245,15 @@ Evaluation uses three-valued logic:
 
 **Decision**: Conservative (never skip potential matches)
 **Rationale**: Correctness over performance; users trust results
+
+### Logical Layer vs Physical Layer
+
+**Decision**: Accept logical expressions (`Expr`), not physical (`PhysicalExpr`)
+**Rationale**:
+- Storage engines don't have physical planning machinery
+- DataFusion already provides physical-layer pruning (`datafusion-pruning`)
+- Aisle fills the gap for logical-layer pruning (storage layer)
+- Different layers, different tools—complementary not competing
 
 ### Non-Invasive Design
 
