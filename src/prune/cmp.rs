@@ -224,18 +224,18 @@ fn page_predicate_states(
             )
         }
         ColumnIndexMetaData::INT32(_) => {
+            let to_scalar = |v| match data_type {
+                DataType::Date32 => Some(ScalarValue::Date32(Some(v))),
+                _ => ScalarValue::Int32(Some(v)).cast_to(data_type).ok(),
+            };
             let value = value.cast_to(data_type).ok()?;
             let mins = i32::min_values_iter(col_index_meta).enumerate();
             let maxs = i32::max_values_iter(col_index_meta);
             Some(
                 mins.zip(maxs)
                     .map(|((idx, min), max)| {
-                        let min = min
-                            .map(|v| ScalarValue::Int32(Some(v)))
-                            .and_then(|v| v.cast_to(data_type).ok());
-                        let max = max
-                            .map(|v| ScalarValue::Int32(Some(v)))
-                            .and_then(|v| v.cast_to(data_type).ok());
+                        let min = min.and_then(&to_scalar);
+                        let max = max.and_then(&to_scalar);
                         let null_count = page_null_count(idx);
                         eval_cmp_stats_page(
                             op,
@@ -250,18 +250,21 @@ fn page_predicate_states(
             )
         }
         ColumnIndexMetaData::INT64(_) => {
+            let to_scalar = |v| match data_type {
+                DataType::Date64 => Some(ScalarValue::Date64(Some(v))),
+                DataType::Timestamp(unit, tz) => {
+                    Some(stats::timestamp_scalar(unit, tz, v))
+                }
+                _ => ScalarValue::Int64(Some(v)).cast_to(data_type).ok(),
+            };
             let value = value.cast_to(data_type).ok()?;
             let mins = i64::min_values_iter(col_index_meta).enumerate();
             let maxs = i64::max_values_iter(col_index_meta);
             Some(
                 mins.zip(maxs)
                     .map(|((idx, min), max)| {
-                        let min = min
-                            .map(|v| ScalarValue::Int64(Some(v)))
-                            .and_then(|v| v.cast_to(data_type).ok());
-                        let max = max
-                            .map(|v| ScalarValue::Int64(Some(v)))
-                            .and_then(|v| v.cast_to(data_type).ok());
+                        let min = min.and_then(&to_scalar);
+                        let max = max.and_then(&to_scalar);
                         let null_count = page_null_count(idx);
                         eval_cmp_stats_page(
                             op,
