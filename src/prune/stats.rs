@@ -1,9 +1,10 @@
-use arrow_schema::{DataType, Schema};
+use arrow_schema::{DataType, Schema, TimeUnit};
 use datafusion_common::ScalarValue;
 use parquet::{
     basic::{ColumnOrder, SortOrder},
     file::statistics::Statistics,
 };
+use std::sync::Arc;
 
 use super::context::RowGroupContext;
 
@@ -67,16 +68,36 @@ fn stats_to_scalars(
         Statistics::Int32(stats) => {
             let min = stats.min_opt().copied()?;
             let max = stats.max_opt().copied()?;
-            let min = ScalarValue::Int32(Some(min)).cast_to(data_type).ok()?;
-            let max = ScalarValue::Int32(Some(max)).cast_to(data_type).ok()?;
-            Some((min, max))
+            match data_type {
+                DataType::Date32 => Some((
+                    ScalarValue::Date32(Some(min)),
+                    ScalarValue::Date32(Some(max)),
+                )),
+                _ => {
+                    let min = ScalarValue::Int32(Some(min)).cast_to(data_type).ok()?;
+                    let max = ScalarValue::Int32(Some(max)).cast_to(data_type).ok()?;
+                    Some((min, max))
+                }
+            }
         }
         Statistics::Int64(stats) => {
             let min = stats.min_opt().copied()?;
             let max = stats.max_opt().copied()?;
-            let min = ScalarValue::Int64(Some(min)).cast_to(data_type).ok()?;
-            let max = ScalarValue::Int64(Some(max)).cast_to(data_type).ok()?;
-            Some((min, max))
+            match data_type {
+                DataType::Date64 => Some((
+                    ScalarValue::Date64(Some(min)),
+                    ScalarValue::Date64(Some(max)),
+                )),
+                DataType::Timestamp(unit, tz) => Some((
+                    timestamp_scalar(unit, tz, min),
+                    timestamp_scalar(unit, tz, max),
+                )),
+                _ => {
+                    let min = ScalarValue::Int64(Some(min)).cast_to(data_type).ok()?;
+                    let max = ScalarValue::Int64(Some(max)).cast_to(data_type).ok()?;
+                    Some((min, max))
+                }
+            }
         }
         Statistics::Float(stats) => {
             let min = stats.min_opt().copied()?;
@@ -109,6 +130,20 @@ fn stats_to_scalars(
             Some((min, max))
         }
         _ => None,
+    }
+}
+
+pub(super) fn timestamp_scalar(
+    unit: &TimeUnit,
+    tz: &Option<Arc<str>>,
+    value: i64,
+) -> ScalarValue {
+    let tz = tz.clone();
+    match unit {
+        TimeUnit::Second => ScalarValue::TimestampSecond(Some(value), tz),
+        TimeUnit::Millisecond => ScalarValue::TimestampMillisecond(Some(value), tz),
+        TimeUnit::Microsecond => ScalarValue::TimestampMicrosecond(Some(value), tz),
+        TimeUnit::Nanosecond => ScalarValue::TimestampNanosecond(Some(value), tz),
     }
 }
 
