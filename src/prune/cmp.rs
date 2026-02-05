@@ -1,6 +1,6 @@
 //! Comparison operator evaluation (=, !=, <, <=, >, >=)
 
-use arrow_schema::DataType;
+use arrow_schema::{DataType, TimeUnit};
 use datafusion_common::ScalarValue;
 use parquet::{
     arrow::arrow_reader::RowSelection,
@@ -226,6 +226,11 @@ fn page_predicate_states(
         ColumnIndexMetaData::INT32(_) => {
             let to_scalar = |v| match data_type {
                 DataType::Date32 => Some(ScalarValue::Date32(Some(v))),
+                DataType::Time32(unit) => match unit {
+                    TimeUnit::Second => Some(ScalarValue::Time32Second(Some(v))),
+                    TimeUnit::Millisecond => Some(ScalarValue::Time32Millisecond(Some(v))),
+                    _ => None,
+                },
                 DataType::Decimal32(_, _)
                 | DataType::Decimal64(_, _)
                 | DataType::Decimal128(_, _)
@@ -259,6 +264,17 @@ fn page_predicate_states(
                 DataType::Timestamp(unit, tz) => {
                     Some(stats::timestamp_scalar(unit, tz, v))
                 }
+                DataType::Time64(unit) => match unit {
+                    TimeUnit::Microsecond => Some(ScalarValue::Time64Microsecond(Some(v))),
+                    TimeUnit::Nanosecond => Some(ScalarValue::Time64Nanosecond(Some(v))),
+                    _ => None,
+                },
+                DataType::Duration(unit) => match unit {
+                    TimeUnit::Second => Some(ScalarValue::DurationSecond(Some(v))),
+                    TimeUnit::Millisecond => Some(ScalarValue::DurationMillisecond(Some(v))),
+                    TimeUnit::Microsecond => Some(ScalarValue::DurationMicrosecond(Some(v))),
+                    TimeUnit::Nanosecond => Some(ScalarValue::DurationNanosecond(Some(v))),
+                },
                 DataType::Decimal32(_, _)
                 | DataType::Decimal64(_, _)
                 | DataType::Decimal128(_, _)

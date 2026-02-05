@@ -86,6 +86,17 @@ fn stats_to_scalars(
                     ScalarValue::Date32(Some(min)),
                     ScalarValue::Date32(Some(max)),
                 )),
+                DataType::Time32(unit) => match unit {
+                    TimeUnit::Second => Some((
+                        ScalarValue::Time32Second(Some(min)),
+                        ScalarValue::Time32Second(Some(max)),
+                    )),
+                    TimeUnit::Millisecond => Some((
+                        ScalarValue::Time32Millisecond(Some(min)),
+                        ScalarValue::Time32Millisecond(Some(max)),
+                    )),
+                    _ => None,
+                },
                 DataType::Decimal32(_, _)
                 | DataType::Decimal64(_, _)
                 | DataType::Decimal128(_, _)
@@ -112,6 +123,35 @@ fn stats_to_scalars(
                     timestamp_scalar(unit, tz, min),
                     timestamp_scalar(unit, tz, max),
                 )),
+                DataType::Time64(unit) => match unit {
+                    TimeUnit::Microsecond => Some((
+                        ScalarValue::Time64Microsecond(Some(min)),
+                        ScalarValue::Time64Microsecond(Some(max)),
+                    )),
+                    TimeUnit::Nanosecond => Some((
+                        ScalarValue::Time64Nanosecond(Some(min)),
+                        ScalarValue::Time64Nanosecond(Some(max)),
+                    )),
+                    _ => None,
+                },
+                DataType::Duration(unit) => match unit {
+                    TimeUnit::Second => Some((
+                        ScalarValue::DurationSecond(Some(min)),
+                        ScalarValue::DurationSecond(Some(max)),
+                    )),
+                    TimeUnit::Millisecond => Some((
+                        ScalarValue::DurationMillisecond(Some(min)),
+                        ScalarValue::DurationMillisecond(Some(max)),
+                    )),
+                    TimeUnit::Microsecond => Some((
+                        ScalarValue::DurationMicrosecond(Some(min)),
+                        ScalarValue::DurationMicrosecond(Some(max)),
+                    )),
+                    TimeUnit::Nanosecond => Some((
+                        ScalarValue::DurationNanosecond(Some(min)),
+                        ScalarValue::DurationNanosecond(Some(max)),
+                    )),
+                },
                 DataType::Decimal32(_, _)
                 | DataType::Decimal64(_, _)
                 | DataType::Decimal128(_, _)
