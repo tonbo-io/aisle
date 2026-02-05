@@ -1,3 +1,4 @@
+use arrow_buffer::i256;
 use arrow_schema::{DataType, Schema, TimeUnit};
 use datafusion_common::ScalarValue;
 use parquet::{
@@ -16,7 +17,7 @@ pub(super) fn stats_for_column(
     let col_idx = *ctx.column_lookup.get(column)?;
     let data_type = data_type_for_path(ctx.schema, column)?;
     let stats = row_group.column(col_idx).statistics()?;
-    if !byte_array_ordering_supported(stats, ctx, col_idx) {
+    if !byte_array_ordering_supported(stats, ctx, col_idx, &data_type) {
         return None;
     }
     let (min, max) = stats_to_scalars(stats, &data_type)?;
@@ -29,6 +30,7 @@ pub(super) fn byte_array_ordering_supported(
     stats: &Statistics,
     ctx: &RowGroupContext<'_>,
     col_idx: usize,
+    data_type: &DataType,
 ) -> bool {
     if !matches!(
         stats,
@@ -38,9 +40,20 @@ pub(super) fn byte_array_ordering_supported(
     }
 
     let column_order = ctx.metadata.file_metadata().column_order(col_idx);
+    let expected_order = if matches!(
+        data_type,
+        DataType::Decimal32(_, _)
+            | DataType::Decimal64(_, _)
+            | DataType::Decimal128(_, _)
+            | DataType::Decimal256(_, _)
+    ) {
+        SortOrder::SIGNED
+    } else {
+        SortOrder::UNSIGNED
+    };
     if !matches!(
         column_order,
-        ColumnOrder::TYPE_DEFINED_ORDER(SortOrder::UNSIGNED)
+        ColumnOrder::TYPE_DEFINED_ORDER(order) if order == expected_order
     ) {
         return false;
     }
@@ -73,6 +86,13 @@ fn stats_to_scalars(
                     ScalarValue::Date32(Some(min)),
                     ScalarValue::Date32(Some(max)),
                 )),
+                DataType::Decimal32(_, _)
+                | DataType::Decimal64(_, _)
+                | DataType::Decimal128(_, _)
+                | DataType::Decimal256(_, _) => Some((
+                    decimal_from_i32(min, data_type)?,
+                    decimal_from_i32(max, data_type)?,
+                )),
                 _ => {
                     let min = ScalarValue::Int32(Some(min)).cast_to(data_type).ok()?;
                     let max = ScalarValue::Int32(Some(max)).cast_to(data_type).ok()?;
@@ -91,6 +111,13 @@ fn stats_to_scalars(
                 DataType::Timestamp(unit, tz) => Some((
                     timestamp_scalar(unit, tz, min),
                     timestamp_scalar(unit, tz, max),
+                )),
+                DataType::Decimal32(_, _)
+                | DataType::Decimal64(_, _)
+                | DataType::Decimal128(_, _)
+                | DataType::Decimal256(_, _) => Some((
+                    decimal_from_i64(min, data_type)?,
+                    decimal_from_i64(max, data_type)?,
                 )),
                 _ => {
                     let min = ScalarValue::Int64(Some(min)).cast_to(data_type).ok()?;
@@ -149,6 +176,10 @@ pub(super) fn timestamp_scalar(
 
 pub(super) fn byte_array_to_scalar(bytes: &[u8], data_type: &DataType) -> Option<ScalarValue> {
     match data_type {
+        DataType::Decimal32(_, _)
+        | DataType::Decimal64(_, _)
+        | DataType::Decimal128(_, _)
+        | DataType::Decimal256(_, _) => decimal_from_bytes(bytes, data_type),
         DataType::Utf8 => {
             let s = String::from_utf8(bytes.to_vec()).ok()?;
             Some(ScalarValue::Utf8(Some(s)))
@@ -177,6 +208,100 @@ pub(super) fn byte_array_to_scalar(bytes: &[u8], data_type: &DataType) -> Option
         }
         _ => None,
     }
+}
+
+pub(super) fn decimal_from_i32(value: i32, data_type: &DataType) -> Option<ScalarValue> {
+    match data_type {
+        DataType::Decimal32(precision, scale) => {
+            Some(ScalarValue::Decimal32(Some(value), *precision, *scale))
+        }
+        DataType::Decimal64(precision, scale) => Some(ScalarValue::Decimal64(
+            Some(i64::from(value)),
+            *precision,
+            *scale,
+        )),
+        DataType::Decimal128(precision, scale) => Some(ScalarValue::Decimal128(
+            Some(i128::from(value)),
+            *precision,
+            *scale,
+        )),
+        DataType::Decimal256(precision, scale) => Some(ScalarValue::Decimal256(
+            Some(i256::from(value)),
+            *precision,
+            *scale,
+        )),
+        _ => None,
+    }
+}
+
+pub(super) fn decimal_from_i64(value: i64, data_type: &DataType) -> Option<ScalarValue> {
+    match data_type {
+        DataType::Decimal32(precision, scale) => {
+            let value = i32::try_from(value).ok()?;
+            Some(ScalarValue::Decimal32(Some(value), *precision, *scale))
+        }
+        DataType::Decimal64(precision, scale) => {
+            Some(ScalarValue::Decimal64(Some(value), *precision, *scale))
+        }
+        DataType::Decimal128(precision, scale) => Some(ScalarValue::Decimal128(
+            Some(i128::from(value)),
+            *precision,
+            *scale,
+        )),
+        DataType::Decimal256(precision, scale) => Some(ScalarValue::Decimal256(
+            Some(i256::from(value)),
+            *precision,
+            *scale,
+        )),
+        _ => None,
+    }
+}
+
+pub(super) fn decimal_from_bytes(bytes: &[u8], data_type: &DataType) -> Option<ScalarValue> {
+    if bytes.is_empty() {
+        return None;
+    }
+    match data_type {
+        DataType::Decimal32(precision, scale) => {
+            if bytes.len() > 4 {
+                return None;
+            }
+            let value = i32::from_be_bytes(sign_extend_be::<4>(bytes));
+            Some(ScalarValue::Decimal32(Some(value), *precision, *scale))
+        }
+        DataType::Decimal64(precision, scale) => {
+            if bytes.len() > 8 {
+                return None;
+            }
+            let value = i64::from_be_bytes(sign_extend_be::<8>(bytes));
+            Some(ScalarValue::Decimal64(Some(value), *precision, *scale))
+        }
+        DataType::Decimal128(precision, scale) => {
+            if bytes.len() > 16 {
+                return None;
+            }
+            let value = i128::from_be_bytes(sign_extend_be::<16>(bytes));
+            Some(ScalarValue::Decimal128(Some(value), *precision, *scale))
+        }
+        DataType::Decimal256(precision, scale) => {
+            if bytes.len() > 32 {
+                return None;
+            }
+            let value = i256::from_be_bytes(sign_extend_be::<32>(bytes));
+            Some(ScalarValue::Decimal256(Some(value), *precision, *scale))
+        }
+        _ => None,
+    }
+}
+
+fn sign_extend_be<const N: usize>(bytes: &[u8]) -> [u8; N] {
+    debug_assert!(bytes.len() <= N, "Array too large, expected <= {N}");
+    let is_negative = (bytes[0] & 128u8) == 128u8;
+    let mut result = if is_negative { [255u8; N] } else { [0u8; N] };
+    for (d, s) in result.iter_mut().skip(N - bytes.len()).zip(bytes) {
+        *d = *s;
+    }
+    result
 }
 
 pub(super) fn data_type_for_path(schema: &Schema, path: &str) -> Option<DataType> {

@@ -201,10 +201,10 @@ Current supported leaf types for statistics-based pruning:
 - Binary: Binary, LargeBinary, BinaryView, FixedSizeBinary
 - Dates: Date32/Date64
 - Timestamps: Timestamp (Second/Millisecond/Microsecond/Nanosecond)
+- Decimals: Decimal32/Decimal64/Decimal128/Decimal256
 
 Not yet supported (treated conservatively as "unknown"):
 - Temporal logical types (Time32/Time64, Duration, Interval)
-- Decimals (Decimal128/Decimal256)
 - Interval/Duration and other complex logical types
 - INT96 physical timestamps (deprecated Parquet physical type)
 
@@ -218,7 +218,7 @@ Not yet supported (treated conservatively as "unknown"):
 
 ## Known Limitations
 
-- Type coverage is partial: Only the leaf types listed above are supported for stats-based pruning; Time/Duration/Interval, decimals, and INT96 physical timestamps are currently conservative.
+- Type coverage is partial: Only the leaf types listed above are supported for stats-based pruning; Time/Duration/Interval and INT96 physical timestamps are currently conservative.
 
 - Byte array ordering requires column metadata: For ordering predicates (`<`, `>`, `<=`, `>=`) on Binary/Utf8 columns:
   - Default (conservative): Requires `TYPE_DEFINED_ORDER(UNSIGNED)` column order AND exact (non-truncated) min/max statistics
