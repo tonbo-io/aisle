@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use aisle::{Expr, PruneRequest};
 use arrow_array::{
-    ArrayRef, Date32Array, Date64Array, RecordBatch, TimestampMicrosecondArray,
+    ArrayRef, Date32Array, Date64Array, RecordBatch, StringArray, TimestampMicrosecondArray,
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
@@ -318,4 +318,91 @@ fn page_level_prunes_date64_pages() {
         selectors.iter().any(|sel| sel.skip),
         "expected page selection with skips"
     );
+}
+
+#[test]
+fn row_group_prunes_timestamp_between() {
+    let unit = TimeUnit::Millisecond;
+    let data_type = DataType::Timestamp(unit, None);
+    let schema = Schema::new(vec![Field::new("a", data_type.clone(), false)]);
+    let batch1 = make_batch(&schema, timestamp_array(unit, None, &[1, 2, 3]));
+    let batch2 = make_batch(&schema, timestamp_array(unit, None, &[100, 101, 102]));
+    let batch3 = make_batch(&schema, timestamp_array(unit, None, &[200, 201, 202]));
+
+    let props = WriterProperties::builder()
+        .set_statistics_enabled(EnabledStatistics::Chunk)
+        .set_max_row_group_size(3)
+        .build();
+
+    let bytes = write_parquet(&[batch1, batch2, batch3], props);
+    let metadata = load_metadata_without_page_index(&bytes);
+
+    let expr = Expr::between(
+        "a",
+        timestamp_scalar(unit, None, 90),
+        timestamp_scalar(unit, None, 150),
+        true,
+    );
+    let result = PruneRequest::new(&metadata, &schema)
+        .with_predicate(&expr)
+        .enable_page_index(false)
+        .prune();
+
+    assert_eq!(result.row_groups(), &[1]);
+}
+
+#[test]
+fn row_group_prunes_mixed_timestamp_and_string_predicate() {
+    let unit = TimeUnit::Millisecond;
+    let schema = Schema::new(vec![
+        Field::new("key", DataType::Utf8, false),
+        Field::new("ts", DataType::Timestamp(unit, None), false),
+    ]);
+
+    let batch1 = RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![
+            Arc::new(StringArray::from(vec!["x", "x", "x"])) as ArrayRef,
+            timestamp_array(unit, None, &[1, 2, 3]),
+        ],
+    )
+    .unwrap();
+
+    let batch2 = RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![
+            Arc::new(StringArray::from(vec!["y", "y", "y"])) as ArrayRef,
+            timestamp_array(unit, None, &[100, 101, 102]),
+        ],
+    )
+    .unwrap();
+
+    let batch3 = RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![
+            Arc::new(StringArray::from(vec!["x", "x", "x"])) as ArrayRef,
+            timestamp_array(unit, None, &[100, 101, 102]),
+        ],
+    )
+    .unwrap();
+
+    let props = WriterProperties::builder()
+        .set_statistics_enabled(EnabledStatistics::Chunk)
+        .set_max_row_group_size(3)
+        .build();
+
+    let bytes = write_parquet(&[batch1, batch2, batch3], props);
+    let metadata = load_metadata_without_page_index(&bytes);
+
+    let expr = Expr::and(vec![
+        Expr::eq("key", ScalarValue::Utf8(Some("x".to_string()))),
+        Expr::gt_eq("ts", timestamp_scalar(unit, None, 50)),
+    ]);
+
+    let result = PruneRequest::new(&metadata, &schema)
+        .with_predicate(&expr)
+        .enable_page_index(false)
+        .prune();
+
+    assert_eq!(result.row_groups(), &[2]);
 }
