@@ -4,6 +4,7 @@ use arrow_schema::{DataType, TimeUnit};
 use datafusion_common::ScalarValue;
 use parquet::{
     arrow::arrow_reader::RowSelection,
+    data_type::Int96,
     file::page_index::column_index::{ColumnIndexIterators, ColumnIndexMetaData},
 };
 
@@ -35,6 +36,12 @@ pub(super) fn eval_cmp_stats(
     let (Some(min), Some(max)) = (min, max) else {
         return TriState::Unknown;
     };
+    if is_interval_scalar(value) {
+        if !is_interval_scalar(min) || !is_interval_scalar(max) {
+            return TriState::Unknown;
+        }
+        return eval_interval_cmp_stats(op, value, min, max, null_count);
+    }
     let min_cmp = min.partial_cmp(value);
     let max_cmp = max.partial_cmp(value);
     let nulls = null_count.unwrap_or(0);
@@ -109,6 +116,72 @@ pub(super) fn eval_cmp_stats(
             }
             TriState::Unknown
         }
+    }
+}
+
+fn is_interval_scalar(value: &ScalarValue) -> bool {
+    matches!(
+        value,
+        ScalarValue::IntervalYearMonth(_)
+            | ScalarValue::IntervalDayTime(_)
+            | ScalarValue::IntervalMonthDayNano(_)
+    )
+}
+
+fn eval_interval_cmp_stats(
+    op: CmpOp,
+    value: &ScalarValue,
+    min: &ScalarValue,
+    max: &ScalarValue,
+    null_count: Option<u64>,
+) -> TriState {
+    if matches!(
+        value,
+        ScalarValue::IntervalYearMonth(None)
+            | ScalarValue::IntervalDayTime(None)
+            | ScalarValue::IntervalMonthDayNano(None)
+    ) {
+        return TriState::Unknown;
+    }
+    if std::mem::discriminant(value) != std::mem::discriminant(min)
+        || std::mem::discriminant(value) != std::mem::discriminant(max)
+    {
+        return TriState::Unknown;
+    }
+    let nulls = null_count.unwrap_or(0);
+    let min_eq_max = min == max;
+    match op {
+        CmpOp::Eq => {
+            if !min_eq_max {
+                return TriState::Unknown;
+            }
+            if min == value {
+                if nulls == 0 {
+                    TriState::True
+                } else {
+                    TriState::Unknown
+                }
+            } else {
+                TriState::False
+            }
+        }
+        CmpOp::NotEq => {
+            if !min_eq_max {
+                return TriState::Unknown;
+            }
+            if min == value {
+                if nulls == 0 {
+                    TriState::False
+                } else {
+                    TriState::Unknown
+                }
+            } else if nulls == 0 {
+                TriState::True
+            } else {
+                TriState::Unknown
+            }
+        }
+        _ => TriState::Unknown,
     }
 }
 
@@ -302,6 +375,28 @@ fn page_predicate_states(
                     .collect(),
             )
         }
+        ColumnIndexMetaData::INT96(_) => {
+            let value = value.cast_to(data_type).ok()?;
+            let mins = Int96::min_values_iter(col_index_meta).enumerate();
+            let maxs = Int96::max_values_iter(col_index_meta);
+            Some(
+                mins.zip(maxs)
+                    .map(|((idx, min), max)| {
+                        let min = min.and_then(|v| stats::int96_to_timestamp_scalar(&v, data_type));
+                        let max = max.and_then(|v| stats::int96_to_timestamp_scalar(&v, data_type));
+                        let null_count = page_null_count(idx);
+                        eval_cmp_stats_page(
+                            op,
+                            &value,
+                            min.as_ref(),
+                            max.as_ref(),
+                            null_count,
+                            nullable,
+                        )
+                    })
+                    .collect(),
+            )
+        }
         ColumnIndexMetaData::FLOAT(_) => {
             let value = value.cast_to(&DataType::Float32).ok()?;
             let value = match value {
@@ -422,6 +517,8 @@ fn page_null_count_or_zero(
 #[cfg(test)]
 mod tests {
     use super::page_null_count_or_zero;
+    use super::{eval_cmp_stats, CmpOp, TriState};
+    use datafusion_common::ScalarValue;
 
     #[test]
     fn page_null_count_uses_page_value_when_present() {
@@ -439,5 +536,39 @@ mod tests {
     fn page_null_count_stays_missing_when_row_group_nulls_unknown_or_nonzero() {
         assert_eq!(page_null_count_or_zero(None, Some(2)), None);
         assert_eq!(page_null_count_or_zero(None, None), None);
+    }
+
+    #[test]
+    fn interval_eq_uses_only_exact_min_max() {
+        let min = ScalarValue::IntervalYearMonth(Some(12));
+        let max = ScalarValue::IntervalYearMonth(Some(12));
+        let value = ScalarValue::IntervalYearMonth(Some(12));
+        let tri = eval_cmp_stats(CmpOp::Eq, &value, Some(&min), Some(&max), Some(0), 0);
+        assert_eq!(tri, TriState::True);
+
+        let value = ScalarValue::IntervalYearMonth(Some(13));
+        let tri = eval_cmp_stats(CmpOp::Eq, &value, Some(&min), Some(&max), Some(5), 0);
+        assert_eq!(tri, TriState::False);
+    }
+
+    #[test]
+    fn interval_not_eq_requires_no_nulls() {
+        let min = ScalarValue::IntervalDayTime(Some(arrow_buffer::IntervalDayTime::new(1, 0)));
+        let max = ScalarValue::IntervalDayTime(Some(arrow_buffer::IntervalDayTime::new(1, 0)));
+        let value = ScalarValue::IntervalDayTime(Some(arrow_buffer::IntervalDayTime::new(2, 0)));
+        let tri = eval_cmp_stats(CmpOp::NotEq, &value, Some(&min), Some(&max), Some(0), 0);
+        assert_eq!(tri, TriState::True);
+
+        let tri = eval_cmp_stats(CmpOp::NotEq, &value, Some(&min), Some(&max), Some(1), 0);
+        assert_eq!(tri, TriState::Unknown);
+    }
+
+    #[test]
+    fn interval_ordering_is_conservative() {
+        let min = ScalarValue::IntervalYearMonth(Some(1));
+        let max = ScalarValue::IntervalYearMonth(Some(10));
+        let value = ScalarValue::IntervalYearMonth(Some(5));
+        let tri = eval_cmp_stats(CmpOp::Lt, &value, Some(&min), Some(&max), Some(0), 0);
+        assert_eq!(tri, TriState::Unknown);
     }
 }

@@ -1,8 +1,9 @@
-use arrow_buffer::i256;
-use arrow_schema::{DataType, Schema, TimeUnit};
+use arrow_buffer::{IntervalDayTime, i256};
+use arrow_schema::{DataType, IntervalUnit, Schema, TimeUnit};
 use datafusion_common::ScalarValue;
 use parquet::{
     basic::{ColumnOrder, SortOrder},
+    data_type::Int96,
     file::statistics::Statistics,
 };
 use std::sync::Arc;
@@ -48,6 +49,8 @@ pub(super) fn byte_array_ordering_supported(
             | DataType::Decimal256(_, _)
     ) {
         SortOrder::SIGNED
+    } else if matches!(data_type, DataType::Interval(_)) {
+        SortOrder::UNDEFINED
     } else {
         SortOrder::UNSIGNED
     };
@@ -196,6 +199,13 @@ fn stats_to_scalars(
             let max = byte_array_to_scalar(max.data(), data_type)?;
             Some((min, max))
         }
+        Statistics::Int96(stats) => {
+            let min = stats.min_opt().copied()?;
+            let max = stats.max_opt().copied()?;
+            let min = int96_to_timestamp_scalar(&min, data_type)?;
+            let max = int96_to_timestamp_scalar(&max, data_type)?;
+            Some((min, max))
+        }
         _ => None,
     }
 }
@@ -216,6 +226,7 @@ pub(super) fn timestamp_scalar(
 
 pub(super) fn byte_array_to_scalar(bytes: &[u8], data_type: &DataType) -> Option<ScalarValue> {
     match data_type {
+        DataType::Interval(unit) => interval_from_bytes(bytes, unit),
         DataType::Decimal32(_, _)
         | DataType::Decimal64(_, _)
         | DataType::Decimal128(_, _)
@@ -248,6 +259,64 @@ pub(super) fn byte_array_to_scalar(bytes: &[u8], data_type: &DataType) -> Option
         }
         _ => None,
     }
+}
+
+fn interval_from_bytes(bytes: &[u8], unit: &IntervalUnit) -> Option<ScalarValue> {
+    if bytes.len() != 12 {
+        return None;
+    }
+    match unit {
+        IntervalUnit::YearMonth => {
+            let months = i32::from_le_bytes(bytes[0..4].try_into().ok()?);
+            Some(ScalarValue::IntervalYearMonth(Some(months)))
+        }
+        IntervalUnit::DayTime => {
+            let days = i32::from_le_bytes(bytes[4..8].try_into().ok()?);
+            let millis = i32::from_le_bytes(bytes[8..12].try_into().ok()?);
+            Some(ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(
+                days, millis,
+            ))))
+        }
+        IntervalUnit::MonthDayNano => None,
+    }
+}
+
+pub(super) fn int96_to_timestamp_scalar(
+    value: &Int96,
+    data_type: &DataType,
+) -> Option<ScalarValue> {
+    let DataType::Timestamp(unit, tz) = data_type else {
+        return None;
+    };
+
+    let data = value.data();
+    let nanos = ((data[1] as i64) << 32) + data[0] as i64;
+    let days = data[2] as i32;
+
+    const JULIAN_DAY_OF_EPOCH: i128 = 2_440_588;
+    const SECONDS_IN_DAY: i128 = 86_400;
+    const NANOS_IN_SECOND: i128 = 1_000_000_000;
+
+    let days_since_epoch = i128::from(days) - JULIAN_DAY_OF_EPOCH;
+    let nanos_since_epoch =
+        days_since_epoch.checked_mul(SECONDS_IN_DAY.checked_mul(NANOS_IN_SECOND)?)?
+            + i128::from(nanos);
+
+    let timestamp = match unit {
+        TimeUnit::Second => nanos_since_epoch / NANOS_IN_SECOND,
+        TimeUnit::Millisecond => nanos_since_epoch / (NANOS_IN_SECOND / 1_000),
+        TimeUnit::Microsecond => nanos_since_epoch / (NANOS_IN_SECOND / 1_000_000),
+        TimeUnit::Nanosecond => nanos_since_epoch,
+    };
+
+    let timestamp = i64::try_from(timestamp).ok()?;
+    let tz = tz.clone();
+    Some(match unit {
+        TimeUnit::Second => ScalarValue::TimestampSecond(Some(timestamp), tz),
+        TimeUnit::Millisecond => ScalarValue::TimestampMillisecond(Some(timestamp), tz),
+        TimeUnit::Microsecond => ScalarValue::TimestampMicrosecond(Some(timestamp), tz),
+        TimeUnit::Nanosecond => ScalarValue::TimestampNanosecond(Some(timestamp), tz),
+    })
 }
 
 pub(super) fn decimal_from_i32(value: i32, data_type: &DataType) -> Option<ScalarValue> {
@@ -420,4 +489,60 @@ pub(super) fn data_type_for_path(schema: &Schema, path: &str) -> Option<DataType
     }
 
     Some(current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn int96_for_nanos_since_midnight(nanos: u64, julian_day: u32) -> Int96 {
+        let low = nanos as u32;
+        let high = (nanos >> 32) as u32;
+        Int96::from(vec![low, high, julian_day])
+    }
+
+    #[test]
+    fn interval_from_bytes_year_month() {
+        let mut bytes = [0u8; 12];
+        bytes[0..4].copy_from_slice(&12i32.to_le_bytes());
+        let scalar = byte_array_to_scalar(&bytes, &DataType::Interval(IntervalUnit::YearMonth))
+            .expect("interval scalar");
+        assert_eq!(scalar, ScalarValue::IntervalYearMonth(Some(12)));
+    }
+
+    #[test]
+    fn interval_from_bytes_day_time() {
+        let mut bytes = [0u8; 12];
+        bytes[4..8].copy_from_slice(&2i32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&1500i32.to_le_bytes());
+        let scalar = byte_array_to_scalar(&bytes, &DataType::Interval(IntervalUnit::DayTime))
+            .expect("interval scalar");
+        assert_eq!(
+            scalar,
+            ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(2, 1500)))
+        );
+    }
+
+    #[test]
+    fn int96_timestamp_epoch_nanos() {
+        let int96 = int96_for_nanos_since_midnight(0, 2_440_588);
+        let data_type = DataType::Timestamp(TimeUnit::Nanosecond, None);
+        let scalar = int96_to_timestamp_scalar(&int96, &data_type).expect("timestamp scalar");
+        assert_eq!(scalar, ScalarValue::TimestampNanosecond(Some(0), None));
+    }
+
+    #[test]
+    fn int96_timestamp_epoch_seconds() {
+        let int96 = int96_for_nanos_since_midnight(1_000_000_000, 2_440_588);
+        let data_type = DataType::Timestamp(TimeUnit::Second, None);
+        let scalar = int96_to_timestamp_scalar(&int96, &data_type).expect("timestamp scalar");
+        assert_eq!(scalar, ScalarValue::TimestampSecond(Some(1), None));
+    }
+
+    #[test]
+    fn interval_month_day_nano_is_unsupported() {
+        let bytes = [0u8; 12];
+        let scalar = byte_array_to_scalar(&bytes, &DataType::Interval(IntervalUnit::MonthDayNano));
+        assert!(scalar.is_none());
+    }
 }

@@ -204,11 +204,14 @@ Current supported leaf types for statistics-based pruning:
 - Times: Time32/Time64
 - Durations: Duration
 - Decimals: Decimal32/Decimal64/Decimal128/Decimal256
+- Intervals: Interval(YearMonth, DayTime)
+
+Notes:
+- INT96 physical timestamps (deprecated) are supported when mapped to Arrow `Timestamp`.
 
 Not yet supported (treated conservatively as "unknown"):
-- Temporal logical types (Interval)
+- Temporal logical types (Interval MonthDayNano)
 - Other complex logical types
-- INT96 physical timestamps (deprecated Parquet physical type)
 
 ### Metadata Sources
 
@@ -220,7 +223,7 @@ Not yet supported (treated conservatively as "unknown"):
 
 ## Known Limitations
 
-- Type coverage is partial: Only the leaf types listed above are supported for stats-based pruning; Interval and INT96 physical timestamps are currently conservative.
+- Type coverage is partial: Only the leaf types listed above are supported for stats-based pruning; IntervalMonthDayNano and other complex logical types are currently conservative. Interval comparisons are limited to equality/inequality when exact min/max are present.
 
 - Byte array ordering requires column metadata: For ordering predicates (`<`, `>`, `<=`, `>=`) on Binary/Utf8 columns:
   - Default (conservative): Requires `TYPE_DEFINED_ORDER(UNSIGNED)` column order AND exact (non-truncated) min/max statistics
