@@ -123,12 +123,12 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 
 ## Post-v0.2.0 Roadmap
 
-1. **Temporal type support** (Date32/Date64, Timestamp)
-2. **Decimal type support** (Decimal128/Decimal256)
-3. **Benchmarking suite** (measure I/O reduction, overhead)
-4. **Performance profiling** (optimize hot paths)
-5. **Dictionary encoding hints** (optimize string comparisons)
-6. **Projection pushdown** (column pruning)
+1. **IntervalMonthDayNano support** (currently conservative/unsupported)
+2. **Benchmarking suite** (measure I/O reduction, overhead)
+3. **Performance profiling** (optimize hot paths)
+4. **Dictionary encoding hints** (optimize string comparisons)
+5. **Projection pushdown** (column pruning)
+6. **Broader logical type coverage** (where metadata semantics can be made safe)
 
 ## References
 
