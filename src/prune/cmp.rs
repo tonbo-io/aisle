@@ -499,7 +499,6 @@ fn page_predicate_states(
             )
         }
         ColumnIndexMetaData::NONE => None,
-        _ => None,
     }
 }
 

@@ -223,7 +223,7 @@ Not yet supported (treated conservatively as "unknown"):
 
 ## Known Limitations
 
-- Type coverage is partial: Only the leaf types listed above are supported for stats-based pruning; IntervalMonthDayNano and other complex logical types are currently conservative. Interval comparisons are limited to equality/inequality when exact min/max are present.
+- Type coverage is partial: Only the leaf types listed above are supported for stats-based pruning; IntervalMonthDayNano and other complex logical types are currently conservative. For Interval columns, comparisons are limited to exact `=` / `!=` cases when row-group or page min/max are equal (`min == max`); ordering comparisons remain conservative.
 
 - Byte array ordering requires column metadata: For ordering predicates (`<`, `>`, `<=`, `>=`) on Binary/Utf8 columns:
   - Default (conservative): Requires `TYPE_DEFINED_ORDER(UNSIGNED)` column order AND exact (non-truncated) min/max statistics

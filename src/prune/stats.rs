@@ -206,7 +206,6 @@ fn stats_to_scalars(
             let max = int96_to_timestamp_scalar(&max, data_type)?;
             Some((min, max))
         }
-        _ => None,
     }
 }
 
