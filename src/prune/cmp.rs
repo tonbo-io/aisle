@@ -181,7 +181,35 @@ fn eval_interval_cmp_stats(
                 TriState::Unknown
             }
         }
-        _ => TriState::Unknown,
+        CmpOp::Lt | CmpOp::LtEq | CmpOp::Gt | CmpOp::GtEq => {
+            if !min_eq_max {
+                return TriState::Unknown;
+            }
+
+            // Interval min/max ordering is undefined in Parquet metadata. We only
+            // allow ordering pruning when the exact stats collapse to one value.
+            let Some(cmp) = min.partial_cmp(value) else {
+                return TriState::Unknown;
+            };
+
+            let all_non_null_rows_match = match op {
+                CmpOp::Lt => cmp == std::cmp::Ordering::Less,
+                CmpOp::LtEq => cmp != std::cmp::Ordering::Greater,
+                CmpOp::Gt => cmp == std::cmp::Ordering::Greater,
+                CmpOp::GtEq => cmp != std::cmp::Ordering::Less,
+                _ => unreachable!("covered above"),
+            };
+
+            if all_non_null_rows_match {
+                if nulls == 0 {
+                    TriState::True
+                } else {
+                    TriState::Unknown
+                }
+            } else {
+                TriState::False
+            }
+        }
     }
 }
 
@@ -334,9 +362,7 @@ fn page_predicate_states(
         ColumnIndexMetaData::INT64(_) => {
             let to_scalar = |v| match data_type {
                 DataType::Date64 => Some(ScalarValue::Date64(Some(v))),
-                DataType::Timestamp(unit, tz) => {
-                    Some(stats::timestamp_scalar(unit, tz, v))
-                }
+                DataType::Timestamp(unit, tz) => Some(stats::timestamp_scalar(unit, tz, v)),
                 DataType::Time64(unit) => match unit {
                     TimeUnit::Microsecond => Some(ScalarValue::Time64Microsecond(Some(v))),
                     TimeUnit::Nanosecond => Some(ScalarValue::Time64Nanosecond(Some(v))),
@@ -515,8 +541,10 @@ fn page_null_count_or_zero(
 
 #[cfg(test)]
 mod tests {
+    use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano};
+
     use super::page_null_count_or_zero;
-    use super::{eval_cmp_stats, CmpOp, TriState};
+    use super::{CmpOp, TriState, eval_cmp_stats};
     use datafusion_common::ScalarValue;
 
     #[test]
@@ -552,9 +580,9 @@ mod tests {
 
     #[test]
     fn interval_not_eq_requires_no_nulls() {
-        let min = ScalarValue::IntervalDayTime(Some(arrow_buffer::IntervalDayTime::new(1, 0)));
-        let max = ScalarValue::IntervalDayTime(Some(arrow_buffer::IntervalDayTime::new(1, 0)));
-        let value = ScalarValue::IntervalDayTime(Some(arrow_buffer::IntervalDayTime::new(2, 0)));
+        let min = ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(1, 0)));
+        let max = ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(1, 0)));
+        let value = ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(2, 0)));
         let tri = eval_cmp_stats(CmpOp::NotEq, &value, Some(&min), Some(&max), Some(0), 0);
         assert_eq!(tri, TriState::True);
 
@@ -563,10 +591,62 @@ mod tests {
     }
 
     #[test]
-    fn interval_ordering_is_conservative() {
+    fn interval_ordering_requires_exact_min_max() {
         let min = ScalarValue::IntervalYearMonth(Some(1));
         let max = ScalarValue::IntervalYearMonth(Some(10));
         let value = ScalarValue::IntervalYearMonth(Some(5));
+        let tri = eval_cmp_stats(CmpOp::Lt, &value, Some(&min), Some(&max), Some(0), 0);
+        assert_eq!(tri, TriState::Unknown);
+    }
+
+    #[test]
+    fn interval_ordering_exact_point_year_month() {
+        let min = ScalarValue::IntervalYearMonth(Some(1));
+        let max = ScalarValue::IntervalYearMonth(Some(1));
+        let lt_value = ScalarValue::IntervalYearMonth(Some(5));
+        let gt_value = ScalarValue::IntervalYearMonth(Some(0));
+
+        let tri = eval_cmp_stats(CmpOp::Lt, &lt_value, Some(&min), Some(&max), Some(0), 0);
+        assert_eq!(tri, TriState::True);
+
+        let tri = eval_cmp_stats(CmpOp::Gt, &gt_value, Some(&min), Some(&max), Some(0), 0);
+        assert_eq!(tri, TriState::True);
+
+        let tri = eval_cmp_stats(CmpOp::GtEq, &lt_value, Some(&min), Some(&max), Some(0), 0);
+        assert_eq!(tri, TriState::False);
+    }
+
+    #[test]
+    fn interval_ordering_exact_point_day_time_respects_nulls() {
+        let min = ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(1, 0)));
+        let max = ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(1, 0)));
+        let value = ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(2, 0)));
+
+        let tri = eval_cmp_stats(CmpOp::Lt, &value, Some(&min), Some(&max), Some(0), 0);
+        assert_eq!(tri, TriState::True);
+
+        let tri = eval_cmp_stats(CmpOp::Lt, &value, Some(&min), Some(&max), Some(1), 0);
+        assert_eq!(tri, TriState::Unknown);
+    }
+
+    #[test]
+    fn interval_ordering_exact_point_month_day_nano() {
+        let min = ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(0, 2, 0)));
+        let max = ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(0, 2, 0)));
+        let value = ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(1, 0, 0)));
+
+        let tri = eval_cmp_stats(CmpOp::LtEq, &value, Some(&min), Some(&max), Some(0), 0);
+        assert_eq!(tri, TriState::True);
+
+        let tri = eval_cmp_stats(CmpOp::Gt, &value, Some(&min), Some(&max), Some(0), 0);
+        assert_eq!(tri, TriState::False);
+    }
+
+    #[test]
+    fn interval_ordering_mixed_variants_stays_conservative() {
+        let min = ScalarValue::IntervalYearMonth(Some(1));
+        let max = ScalarValue::IntervalYearMonth(Some(1));
+        let value = ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(1, 0)));
         let tri = eval_cmp_stats(CmpOp::Lt, &value, Some(&min), Some(&max), Some(0), 0);
         assert_eq!(tri, TriState::Unknown);
     }

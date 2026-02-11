@@ -1,4 +1,4 @@
-use arrow_buffer::{IntervalDayTime, i256};
+use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano, i256};
 use arrow_schema::{DataType, IntervalUnit, Schema, TimeUnit};
 use datafusion_common::ScalarValue;
 use parquet::{
@@ -209,11 +209,7 @@ fn stats_to_scalars(
     }
 }
 
-pub(super) fn timestamp_scalar(
-    unit: &TimeUnit,
-    tz: &Option<Arc<str>>,
-    value: i64,
-) -> ScalarValue {
+pub(super) fn timestamp_scalar(unit: &TimeUnit, tz: &Option<Arc<str>>, value: i64) -> ScalarValue {
     let tz = tz.clone();
     match unit {
         TimeUnit::Second => ScalarValue::TimestampSecond(Some(value), tz),
@@ -264,19 +260,20 @@ fn interval_from_bytes(bytes: &[u8], unit: &IntervalUnit) -> Option<ScalarValue>
     if bytes.len() != 12 {
         return None;
     }
+    let months = i32::from_le_bytes(bytes[0..4].try_into().ok()?);
+    let days = i32::from_le_bytes(bytes[4..8].try_into().ok()?);
+    let millis = i32::from_le_bytes(bytes[8..12].try_into().ok()?);
     match unit {
-        IntervalUnit::YearMonth => {
-            let months = i32::from_le_bytes(bytes[0..4].try_into().ok()?);
-            Some(ScalarValue::IntervalYearMonth(Some(months)))
+        IntervalUnit::YearMonth => Some(ScalarValue::IntervalYearMonth(Some(months))),
+        IntervalUnit::DayTime => Some(ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(
+            days, millis,
+        )))),
+        IntervalUnit::MonthDayNano => {
+            let nanos = i64::from(millis).checked_mul(1_000_000)?;
+            Some(ScalarValue::IntervalMonthDayNano(Some(
+                IntervalMonthDayNano::new(months, days, nanos),
+            )))
         }
-        IntervalUnit::DayTime => {
-            let days = i32::from_le_bytes(bytes[4..8].try_into().ok()?);
-            let millis = i32::from_le_bytes(bytes[8..12].try_into().ok()?);
-            Some(ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(
-                days, millis,
-            ))))
-        }
-        IntervalUnit::MonthDayNano => None,
     }
 }
 
@@ -297,9 +294,9 @@ pub(super) fn int96_to_timestamp_scalar(
     const NANOS_IN_SECOND: i128 = 1_000_000_000;
 
     let days_since_epoch = i128::from(days) - JULIAN_DAY_OF_EPOCH;
-    let nanos_since_epoch =
-        days_since_epoch.checked_mul(SECONDS_IN_DAY.checked_mul(NANOS_IN_SECOND)?)?
-            + i128::from(nanos);
+    let nanos_since_epoch = days_since_epoch
+        .checked_mul(SECONDS_IN_DAY.checked_mul(NANOS_IN_SECOND)?)?
+        + i128::from(nanos);
 
     let timestamp = match unit {
         TimeUnit::Second => nanos_since_epoch / NANOS_IN_SECOND,
@@ -539,8 +536,22 @@ mod tests {
     }
 
     #[test]
-    fn interval_month_day_nano_is_unsupported() {
-        let bytes = [0u8; 12];
+    fn interval_from_bytes_month_day_nano() {
+        let mut bytes = [0u8; 12];
+        bytes[0..4].copy_from_slice(&1i32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&2i32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&1500i32.to_le_bytes());
+        let scalar = byte_array_to_scalar(&bytes, &DataType::Interval(IntervalUnit::MonthDayNano))
+            .expect("interval scalar");
+        assert_eq!(
+            scalar,
+            ScalarValue::IntervalMonthDayNano(Some(IntervalMonthDayNano::new(1, 2, 1_500_000_000)))
+        );
+    }
+
+    #[test]
+    fn interval_from_bytes_requires_12_bytes() {
+        let bytes = [0u8; 11];
         let scalar = byte_array_to_scalar(&bytes, &DataType::Interval(IntervalUnit::MonthDayNano));
         assert!(scalar.is_none());
     }

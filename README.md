@@ -204,14 +204,19 @@ Current supported leaf types for statistics-based pruning:
 - Times: Time32/Time64
 - Durations: Duration
 - Decimals: Decimal32/Decimal64/Decimal128/Decimal256
-- Intervals: Interval(YearMonth, DayTime)
+- Intervals: Interval(YearMonth, DayTime, MonthDayNano*)
 
 Notes:
 - INT96 physical timestamps (deprecated) are supported when mapped to Arrow `Timestamp`.
 
-Not yet supported (treated conservatively as "unknown"):
-- Temporal logical types (Interval MonthDayNano)
-- Other complex logical types
+`*` MonthDayNano note: Parquet INTERVAL metadata stores a 12-byte months/days/millis payload. Aisle maps this to Arrow MonthDayNano as `nanoseconds = millis * 1_000_000` (millisecond precision only).
+
+Unsupported logical types remain conservative (`Unknown` -> keep data):
+- List, LargeList, FixedSizeList, ListView, LargeListView
+- Struct, Map, Union
+- Dictionary
+- RunEndEncoded
+- Extension
 
 ### Metadata Sources
 
@@ -223,7 +228,10 @@ Not yet supported (treated conservatively as "unknown"):
 
 ## Known Limitations
 
-- Type coverage is partial: Only the leaf types listed above are supported for stats-based pruning; IntervalMonthDayNano and other complex logical types are currently conservative. For Interval columns, comparisons are limited to exact `=` / `!=` cases when row-group or page min/max are equal (`min == max`); ordering comparisons remain conservative.
+- Type coverage is partial: Unsupported logical types (listed above) are always conservative (`Unknown` -> keep). For Interval columns, pruning is only enabled when statistics are exact and collapse to a single value (`min == max`):
+  - `=` / `!=`: exact point pruning when `min == max`
+  - `<`, `<=`, `>`, `>=`: exact point pruning when `min == max`
+  - Non-point interval ranges (`min != max`) stay conservative for ordering predicates
 
 - Byte array ordering requires column metadata: For ordering predicates (`<`, `>`, `<=`, `>=`) on Binary/Utf8 columns:
   - Default (conservative): Requires `TYPE_DEFINED_ORDER(UNSIGNED)` column order AND exact (non-truncated) min/max statistics
