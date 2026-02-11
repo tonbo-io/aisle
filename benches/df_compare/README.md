@@ -91,6 +91,7 @@ cargo bench --manifest-path benches/df_compare/Cargo.toml --bench compare
 cargo bench --manifest-path benches/df_compare/Cargo.toml --bench metadata_eval
 cargo bench --manifest-path benches/df_compare/Cargo.toml --bench point_query
 cargo bench --manifest-path benches/df_compare/Cargo.toml --bench bloom_filter
+cargo bench --manifest-path benches/df_compare/Cargo.toml --bench projection
 
 # View HTML reports
 open benches/df_compare/target/criterion/report/index.html
@@ -118,6 +119,11 @@ open benches/df_compare/target/criterion/report/index.html
 - **Purpose:** Demonstrate bloom filter effectiveness
 - **Data:** Alternating EVEN/ODD row groups with wide (but not identical) stats
 - **Key Metric:** Row group elimination rate
+
+### `projection.rs` - Wide Schema Projection
+- **Purpose:** Measure projection impact on Aisle read path under wide schemas
+- **Data:** 40 row groups × 4,096 rows with 50 columns (`group_mod` filter + 48 payload cols)
+- **Key Metrics:** Wall-clock latency, rows read, decoded/output payload proxy
 
 ## References
 
