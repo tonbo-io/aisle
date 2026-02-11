@@ -20,6 +20,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ `PruneRequest` builder API for one-shot operations
 - ✅ `Pruner` for stateful reuse across predicates
 - ✅ `PruneResult` with row_groups, row_selection, roaring_bitmap, compile_result
+- ✅ Projection-aware pruning outputs (`with_output_projection`, `required_columns`, projection masks)
 - ✅ `PruneOptions` for configuration
 - ✅ `AsyncBloomFilterProvider` trait for custom bloom filter loading
 - ✅ Internal `concat_selections` for row-group alignment
@@ -55,6 +56,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ 117 tests passing across all suites
 - ✅ Unit tests for all modules
 - ✅ Integration tests for row-group and page-level pruning
+- ✅ Projection pushdown integration tests (required columns + reader projection masks)
 - ✅ Async bloom filter tests
 - ✅ Cast support tests
 - ✅ Null count edge case tests
@@ -128,7 +130,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 3. **Benchmarking suite** (measure I/O reduction, overhead)
 4. **Performance profiling** (optimize hot paths)
 5. **Dictionary encoding hints** (optimize string comparisons)
-6. **Projection pushdown** (column pruning)
+6. **Broader logical type coverage** (where metadata semantics can remain conservative-safe)
 
 ## References
 

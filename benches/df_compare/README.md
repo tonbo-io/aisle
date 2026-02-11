@@ -124,6 +124,7 @@ open benches/df_compare/target/criterion/report/index.html
 - **Purpose:** Measure projection impact on Aisle read path under wide schemas
 - **Data:** 40 row groups × 4,096 rows with 50 columns (`group_mod` filter + 48 payload cols)
 - **Key Metrics:** Wall-clock latency, rows read, decoded/output payload proxy
+- **Latest results:** `benches/df_compare/results/projection_pushdown.md`
 
 ## References
 
