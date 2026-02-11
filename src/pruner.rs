@@ -331,7 +331,7 @@ impl Pruner {
     #[cfg(feature = "datafusion")]
     pub fn prune(&self, metadata: &ParquetMetaData, expr: &DfExpr) -> PruneResult {
         let compile = compile_pruning_ir_with_index(expr, self.schema.as_ref(), &self.schema_index);
-        prune_compiled(metadata, self.schema.as_ref(), compile, &self.options)
+        prune_compiled(metadata, self.schema.as_ref(), compile, &self.options, None)
     }
 
     /// Prune Parquet metadata using pre-built IR predicates.
@@ -339,7 +339,7 @@ impl Pruner {
     /// This bypasses DataFusion compilation and uses the IR as-is.
     pub fn prune_ir(&self, metadata: &ParquetMetaData, predicates: &[Expr]) -> PruneResult {
         let compile = AisleResult::from_ir_slice(predicates);
-        prune_compiled(metadata, self.schema.as_ref(), compile, &self.options)
+        prune_compiled(metadata, self.schema.as_ref(), compile, &self.options, None)
     }
 
     /// Prune Parquet metadata using the cached schema index and bloom filters from the async
@@ -358,6 +358,7 @@ impl Pruner {
             compile,
             &self.options,
             builder,
+            None,
         )
         .await
     }
@@ -377,6 +378,7 @@ impl Pruner {
             compile,
             &self.options,
             builder,
+            None,
         )
         .await
     }
@@ -396,6 +398,7 @@ impl Pruner {
             compile,
             &self.options,
             provider,
+            None,
         )
         .await
     }
@@ -414,6 +417,7 @@ impl Pruner {
             compile,
             &self.options,
             provider,
+            None,
         )
         .await
     }
@@ -448,6 +452,7 @@ impl CompiledPruner {
             self.schema.as_ref(),
             self.compile.clone(),
             &self.options,
+            None,
         )
     }
 
@@ -464,6 +469,7 @@ impl CompiledPruner {
             self.compile.clone(),
             &self.options,
             builder,
+            None,
         )
         .await
     }
@@ -481,6 +487,7 @@ impl CompiledPruner {
             self.compile.clone(),
             &self.options,
             provider,
+            None,
         )
         .await
     }

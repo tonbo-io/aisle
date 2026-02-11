@@ -88,12 +88,20 @@ fn run_scan(
     schema: &Arc<Schema>,
     predicate: &Expr,
     projection_columns: Option<&[&str]>,
+    use_aisle_projection: bool,
 ) -> ScanMetrics {
-    let prune = PruneRequest::new(metadata, schema)
+    let mut request = PruneRequest::new(metadata, schema)
         .with_df_predicate(predicate)
         .enable_page_index(false)
-        .enable_bloom_filter(false)
-        .prune();
+        .enable_bloom_filter(false);
+
+    if use_aisle_projection {
+        if let Some(columns) = projection_columns {
+            request = request.with_output_projection(columns.iter().copied());
+        }
+    }
+
+    let prune = request.prune();
 
     let parquet_schema = metadata.file_metadata().schema_descr();
     let mut builder = ParquetRecordBatchReaderBuilder::try_new(bytes.clone())
@@ -104,11 +112,12 @@ fn run_scan(
             parquet_schema,
         ))]));
 
-    if let Some(columns) = projection_columns {
-        builder = builder.with_projection(ProjectionMask::columns(
-            parquet_schema,
-            columns.iter().copied(),
-        ));
+    if use_aisle_projection {
+        if let Some(mask) = prune.output_projection_mask(parquet_schema) {
+            builder = builder.with_projection(mask);
+        }
+    } else if let Some(columns) = projection_columns {
+        builder = builder.with_projection(ProjectionMask::columns(parquet_schema, columns.iter().copied()));
     }
 
     let reader = builder.build().unwrap();
@@ -147,13 +156,21 @@ fn bench_projection_pushdown(c: &mut Criterion) {
     let predicate = col("group_mod").eq(lit(3i64));
     let requested_projection = ["key"];
 
-    let no_projection_metrics = run_scan(&bytes, &metadata, &schema, &predicate, None);
+    let pipeline_projection_metrics = run_scan(
+        &bytes,
+        &metadata,
+        &schema,
+        &predicate,
+        Some(&requested_projection),
+        true,
+    );
     let manual_projection_metrics = run_scan(
         &bytes,
         &metadata,
         &schema,
         &predicate,
         Some(&requested_projection),
+        false,
     );
 
     println!(
@@ -163,13 +180,13 @@ fn bench_projection_pushdown(c: &mut Criterion) {
         schema.fields().len()
     );
     println!(
-        "No projection: kept_rg={}, rows_read={}, rows_emitted={}, output_cols={}, decoded_cells={}, output_bytes={}",
-        no_projection_metrics.kept_row_groups,
-        no_projection_metrics.rows_in_kept_groups,
-        no_projection_metrics.rows_emitted,
-        no_projection_metrics.output_columns,
-        no_projection_metrics.decoded_cell_proxy,
-        no_projection_metrics.output_bytes_proxy,
+        "Aisle projection pipeline: kept_rg={}, rows_read={}, rows_emitted={}, output_cols={}, decoded_cells={}, output_bytes={}",
+        pipeline_projection_metrics.kept_row_groups,
+        pipeline_projection_metrics.rows_in_kept_groups,
+        pipeline_projection_metrics.rows_emitted,
+        pipeline_projection_metrics.output_columns,
+        pipeline_projection_metrics.decoded_cell_proxy,
+        pipeline_projection_metrics.output_bytes_proxy,
     );
     println!(
         "Manual projection ref: kept_rg={}, rows_read={}, rows_emitted={}, output_cols={}, decoded_cells={}, output_bytes={}",
@@ -184,7 +201,16 @@ fn bench_projection_pushdown(c: &mut Criterion) {
     let mut group = c.benchmark_group("projection_pushdown_wide_scan");
 
     group.bench_function("aisle_projection_pipeline", |b| {
-        b.iter(|| black_box(run_scan(&bytes, &metadata, &schema, &predicate, None)))
+        b.iter(|| {
+            black_box(run_scan(
+                &bytes,
+                &metadata,
+                &schema,
+                &predicate,
+                Some(&requested_projection),
+                true,
+            ))
+        })
     });
 
     group.bench_function("aisle_projection_manual_reference", |b| {
@@ -195,6 +221,7 @@ fn bench_projection_pushdown(c: &mut Criterion) {
                 &schema,
                 &predicate,
                 Some(&requested_projection),
+                false,
             ))
         })
     });

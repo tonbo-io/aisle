@@ -2,6 +2,7 @@ use arrow_schema::Schema;
 #[cfg(feature = "datafusion")]
 use datafusion_expr::Expr as DfExpr;
 use parquet::file::metadata::ParquetMetaData;
+use std::collections::BTreeSet;
 
 use super::{
     api::{prune_compiled, prune_compiled_with_bloom_provider},
@@ -57,6 +58,7 @@ pub struct PruneRequest<'a> {
     metadata: &'a ParquetMetaData,
     schema: &'a Schema,
     predicate: Option<PredicateRef<'a>>,
+    output_projection: Option<Vec<String>>,
     options: PruneOptionsBuilder,
 }
 
@@ -82,6 +84,7 @@ impl<'a> PruneRequest<'a> {
             metadata,
             schema,
             predicate: None,
+            output_projection: None,
             options: PruneOptions::builder(),
         }
     }
@@ -146,6 +149,29 @@ impl<'a> PruneRequest<'a> {
     pub fn with_predicate(mut self, expr: &'a Expr) -> Self {
         self.predicate = Some(PredicateRef::Ir(std::slice::from_ref(expr)));
         self
+    }
+
+    /// Sets the desired output projection columns for the read path.
+    ///
+    /// This does not affect pruning decisions. It records output columns in the
+    /// [`PruneResult`] so callers can apply a Parquet projection mask while
+    /// preserving row-group/page pruning.
+    pub fn with_output_projection<I, S>(mut self, columns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.output_projection = normalize_projection(columns);
+        self
+    }
+
+    /// Alias for [`with_output_projection`](Self::with_output_projection).
+    pub fn with_projection<I, S>(self, columns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.with_output_projection(columns)
     }
 
     /// Enables or disables page index pruning.
@@ -357,16 +383,34 @@ impl<'a> PruneRequest<'a> {
             #[cfg(feature = "datafusion")]
             Some(PredicateRef::Expr(expr)) => {
                 let compile = compile_pruning_ir(expr, self.schema);
-                prune_compiled(self.metadata, self.schema, compile, &options)
+                prune_compiled(
+                    self.metadata,
+                    self.schema,
+                    compile,
+                    &options,
+                    self.output_projection,
+                )
             }
             Some(PredicateRef::Ir(exprs)) => {
                 let compile = AisleResult::from_ir_slice(exprs);
-                prune_compiled(self.metadata, self.schema, compile, &options)
+                prune_compiled(
+                    self.metadata,
+                    self.schema,
+                    compile,
+                    &options,
+                    self.output_projection,
+                )
             }
             None => {
                 // No predicate = keep all row groups
                 let row_groups: Vec<usize> = (0..self.metadata.num_row_groups()).collect();
-                PruneResult::new(row_groups, None, None, AisleResult::default())
+                PruneResult::new(
+                    row_groups,
+                    None,
+                    None,
+                    AisleResult::default(),
+                    self.output_projection,
+                )
             }
         }
     }
@@ -416,6 +460,7 @@ impl<'a> PruneRequest<'a> {
                     compile,
                     &options,
                     provider,
+                    self.output_projection,
                 )
                 .await
             }
@@ -427,14 +472,40 @@ impl<'a> PruneRequest<'a> {
                     compile,
                     &options,
                     provider,
+                    self.output_projection,
                 )
                 .await
             }
             None => {
                 // No predicate = keep all row groups
                 let row_groups: Vec<usize> = (0..self.metadata.num_row_groups()).collect();
-                PruneResult::new(row_groups, None, None, AisleResult::default())
+                PruneResult::new(
+                    row_groups,
+                    None,
+                    None,
+                    AisleResult::default(),
+                    self.output_projection,
+                )
             }
         }
+    }
+}
+
+fn normalize_projection<I, S>(columns: I) -> Option<Vec<String>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut unique = BTreeSet::new();
+    for column in columns {
+        let name = column.into();
+        if !name.is_empty() {
+            unique.insert(name);
+        }
+    }
+    if unique.is_empty() {
+        None
+    } else {
+        Some(unique.into_iter().collect())
     }
 }
