@@ -28,6 +28,7 @@ pub(crate) fn prune_compiled(
     compile: AisleResult,
     options: &PruneOptions,
     output_projection: Option<Vec<String>>,
+    predicate_columns: Option<Vec<String>>,
 ) -> PruneResult {
     let evaluator = PruneEvaluator::new(metadata, schema);
     let predicates = if options.enable_bloom_filter() {
@@ -99,6 +100,7 @@ pub(crate) fn prune_compiled(
         roaring,
         compile,
         output_projection,
+        predicate_columns,
     )
 }
 
@@ -109,6 +111,7 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
     options: &PruneOptions,
     provider: &mut P,
     output_projection: Option<Vec<String>>,
+    predicate_columns: Option<Vec<String>>,
 ) -> PruneResult {
     let evaluator = PruneEvaluator::new(metadata, schema);
     let predicates = if options.enable_bloom_filter() {
@@ -202,6 +205,7 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
         roaring,
         compile,
         output_projection,
+        predicate_columns,
     )
 }
 

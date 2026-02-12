@@ -5,6 +5,8 @@ use arrow_array::{ArrayRef, Int32Array, RecordBatch, StructArray};
 use arrow_schema::{DataType, Field, Fields, Schema};
 use bytes::Bytes;
 use datafusion_common::ScalarValue;
+#[cfg(feature = "datafusion")]
+use datafusion_expr::{BinaryExpr, Expr as DfExpr, Operator, col, lit};
 use parquet::{
     arrow::{
         ArrowWriter,
@@ -282,4 +284,31 @@ fn projection_configuration_is_noop_when_not_applied_to_reader() {
     let projection_unused_rows =
         scan_all_columns(&bytes, &with_projection, &predicate, parquet_schema);
     assert_eq!(no_projection_rows, projection_unused_rows);
+}
+
+#[cfg(feature = "datafusion")]
+#[test]
+fn required_projection_mask_keeps_columns_for_unsupported_residual_predicates() {
+    let (bytes, schema) = make_wide_data();
+    let metadata = load_metadata(&bytes);
+
+    let unsupported = DfExpr::BinaryExpr(BinaryExpr {
+        left: Box::new(col("payload_a")),
+        op: Operator::Plus,
+        right: Box::new(lit(1i32)),
+    });
+    let predicate = col("key").gt(lit(2i32)).and(unsupported);
+
+    let result = PruneRequest::new(&metadata, &schema)
+        .with_df_predicate(&predicate)
+        .with_output_projection(["payload_b"])
+        .prune();
+
+    assert_eq!(result.compile_result().prunable_count(), 1);
+    assert_eq!(result.compile_result().error_count(), 1);
+
+    let mask = result.required_projection_mask(metadata.file_metadata().schema_descr());
+    assert!(mask.leaf_included(0)); // key: compiled prunable predicate
+    assert!(mask.leaf_included(1)); // payload_a: unsupported residual predicate
+    assert!(mask.leaf_included(2)); // payload_b: requested output projection
 }

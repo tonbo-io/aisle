@@ -12,7 +12,7 @@ use super::{
 };
 use crate::AisleResult;
 #[cfg(feature = "datafusion")]
-use crate::compile::compile_pruning_ir;
+use crate::compile::{collect_columns_from_df_expr, compile_pruning_ir};
 use crate::expr::Expr;
 
 #[derive(Debug)]
@@ -383,12 +383,14 @@ impl<'a> PruneRequest<'a> {
             #[cfg(feature = "datafusion")]
             Some(PredicateRef::Expr(expr)) => {
                 let compile = compile_pruning_ir(expr, self.schema);
+                let predicate_columns = collect_columns_from_df_expr(expr);
                 prune_compiled(
                     self.metadata,
                     self.schema,
                     compile,
                     &options,
                     self.output_projection,
+                    predicate_columns,
                 )
             }
             Some(PredicateRef::Ir(exprs)) => {
@@ -399,6 +401,7 @@ impl<'a> PruneRequest<'a> {
                     compile,
                     &options,
                     self.output_projection,
+                    None,
                 )
             }
             None => {
@@ -410,6 +413,7 @@ impl<'a> PruneRequest<'a> {
                     None,
                     AisleResult::default(),
                     self.output_projection,
+                    None,
                 )
             }
         }
@@ -454,6 +458,7 @@ impl<'a> PruneRequest<'a> {
             #[cfg(feature = "datafusion")]
             Some(PredicateRef::Expr(expr)) => {
                 let compile = compile_pruning_ir(expr, self.schema);
+                let predicate_columns = collect_columns_from_df_expr(expr);
                 prune_compiled_with_bloom_provider(
                     self.metadata,
                     self.schema,
@@ -461,6 +466,7 @@ impl<'a> PruneRequest<'a> {
                     &options,
                     provider,
                     self.output_projection,
+                    predicate_columns,
                 )
                 .await
             }
@@ -473,6 +479,7 @@ impl<'a> PruneRequest<'a> {
                     &options,
                     provider,
                     self.output_projection,
+                    None,
                 )
                 .await
             }
@@ -485,6 +492,7 @@ impl<'a> PruneRequest<'a> {
                     None,
                     AisleResult::default(),
                     self.output_projection,
+                    None,
                 )
             }
         }

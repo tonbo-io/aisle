@@ -18,6 +18,7 @@ pub struct PruneResult {
     output_projection: Option<Vec<String>>,
     predicate_columns: Vec<String>,
     required_columns: Vec<String>,
+    fallback_required_projection_all: bool,
 }
 
 impl PruneResult {
@@ -48,7 +49,7 @@ impl PruneResult {
         self.output_projection.as_deref()
     }
 
-    /// Get columns referenced by compiled predicates.
+    /// Get columns referenced by predicate expressions used for pruning.
     ///
     /// Values are deduplicated and returned in sorted order.
     pub fn predicate_columns(&self) -> &[String] {
@@ -74,7 +75,7 @@ impl PruneResult {
 
     /// Build a Parquet projection mask from [`required_columns`](Self::required_columns).
     pub fn required_projection_mask(&self, parquet_schema: &SchemaDescriptor) -> ProjectionMask {
-        if self.required_columns.is_empty() {
+        if self.fallback_required_projection_all || self.required_columns.is_empty() {
             ProjectionMask::all()
         } else {
             ProjectionMask::columns(
@@ -145,8 +146,12 @@ impl PruneResult {
         roaring: Option<RoaringBitmap>,
         compile: AisleResult,
         output_projection: Option<Vec<String>>,
+        predicate_columns: Option<Vec<String>>,
     ) -> Self {
-        let predicate_columns = collect_columns_from_predicates(compile.ir_exprs());
+        let fallback_required_projection_all = compile.has_errors() && predicate_columns.is_none();
+        let predicate_columns = predicate_columns
+            .map(normalize_columns)
+            .unwrap_or_else(|| collect_columns_from_predicates(compile.ir_exprs()));
         let required_columns = merge_columns(&predicate_columns, output_projection.as_deref());
         Self {
             row_groups,
@@ -156,6 +161,7 @@ impl PruneResult {
             output_projection,
             predicate_columns,
             required_columns,
+            fallback_required_projection_all,
         }
     }
 }
@@ -200,4 +206,14 @@ fn merge_columns(
         }
     }
     columns.into_iter().collect()
+}
+
+fn normalize_columns(columns: Vec<String>) -> Vec<String> {
+    let mut unique = BTreeSet::new();
+    for column in columns {
+        if !column.is_empty() {
+            unique.insert(column);
+        }
+    }
+    unique.into_iter().collect()
 }
