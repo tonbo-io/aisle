@@ -37,6 +37,8 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ Bloom filter integration for `=` and `IN` predicates
 - ✅ Page-level NOT pushdown (conservative, exact selections only)
 - ✅ Null count handling (row-group and page-level)
+- ✅ IntervalMonthDayNano metadata decoding (Parquet INTERVAL months/days/millis -> MonthDayNano)
+- ✅ Interval ordering pruning for exact point stats (`min == max`) across YearMonth/DayTime/MonthDayNano
 
 ### Selection / Bitmap ✅
 - ✅ Handle >u32::MAX row counts (skip RoaringBitmap, use RowSelection)
@@ -91,6 +93,18 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - **Selection alignment**: RowSelection must match included row groups only
 - **Column resolution**: Full path, qualified names, or unique leaf name
 
+## Conservative Policy for Unsupported Logical Types
+
+- Unsupported logical types always evaluate to `Unknown` at metadata time, so data is kept.
+- Explicit unsupported logical types:
+  - List, LargeList, FixedSizeList, ListView, LargeListView
+  - Struct, Map, Union
+  - Dictionary
+  - RunEndEncoded
+  - Extension
+- Interval ordering remains conservative unless stats/page bounds are exact and collapse to one value (`min == max`).
+- Invalid interval metadata encodings (e.g. unexpected byte lengths) are treated conservatively (`Unknown`).
+
 ## Testing Strategy
 
 **Unit Tests** (41 tests):
@@ -123,12 +137,11 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 
 ## Post-v0.2.0 Roadmap
 
-1. **IntervalMonthDayNano support** (currently conservative/unsupported)
-2. **Benchmarking suite** (measure I/O reduction, overhead)
-3. **Performance profiling** (optimize hot paths)
-4. **Dictionary encoding hints** (optimize string comparisons)
-5. **Projection pushdown** (column pruning)
-6. **Broader logical type coverage** (where metadata semantics can be made safe)
+1. **Benchmarking suite** (measure I/O reduction, overhead)
+2. **Performance profiling** (optimize hot paths)
+3. **Dictionary encoding hints** (optimize string comparisons)
+4. **Projection pushdown** (column pruning)
+5. **Broader logical type coverage** (where metadata semantics can be made safe)
 
 ## References
 
