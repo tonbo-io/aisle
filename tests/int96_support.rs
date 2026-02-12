@@ -20,13 +20,14 @@ const NANOS_PER_DAY: i128 = 86_400_i128 * 1_000_000_000_i128;
 
 fn int96_from_timestamp_nanos(nanos: i64) -> Int96 {
     let nanos = i128::from(nanos);
-    let days_since_epoch = nanos / NANOS_PER_DAY;
-    let nanos_of_day = nanos % NANOS_PER_DAY;
+    let days_since_epoch = nanos.div_euclid(NANOS_PER_DAY);
+    let nanos_of_day = nanos.rem_euclid(NANOS_PER_DAY);
     let julian_day = days_since_epoch + i128::from(JULIAN_DAY_OF_EPOCH);
-    let nanos_of_day = nanos_of_day as u64;
+    let nanos_of_day = u64::try_from(nanos_of_day).expect("nanos_of_day must fit u64");
+    let julian_day = u32::try_from(julian_day).expect("julian_day must fit u32");
     let low = nanos_of_day as u32;
     let high = (nanos_of_day >> 32) as u32;
-    Int96::from(vec![low, high, julian_day as u32])
+    Int96::from(vec![low, high, julian_day])
 }
 
 fn timestamp_scalar(unit: TimeUnit, value: i64) -> ScalarValue {
@@ -40,9 +41,9 @@ fn timestamp_scalar(unit: TimeUnit, value: i64) -> ScalarValue {
 
 fn to_unit_value(nanos: i64, unit: TimeUnit) -> i64 {
     match unit {
-        TimeUnit::Second => nanos / 1_000_000_000,
-        TimeUnit::Millisecond => nanos / 1_000_000,
-        TimeUnit::Microsecond => nanos / 1_000,
+        TimeUnit::Second => nanos.div_euclid(1_000_000_000),
+        TimeUnit::Millisecond => nanos.div_euclid(1_000_000),
+        TimeUnit::Microsecond => nanos.div_euclid(1_000),
         TimeUnit::Nanosecond => nanos,
     }
 }
@@ -164,12 +165,52 @@ fn page_level_prunes_int96_pages() {
             .emit_roaring(false)
             .prune();
 
-        assert_eq!(result.row_groups(), &[0], "expected page prune for {unit:?}");
+        assert_eq!(
+            result.row_groups(),
+            &[0],
+            "expected page prune for {unit:?}"
+        );
         let selection = result.row_selection().expect("expected page selection");
         let selectors: Vec<RowSelector> = selection.clone().into();
         assert!(
             selectors.iter().any(|sel| sel.skip),
             "expected page selection with skips for {unit:?}"
+        );
+    }
+}
+
+#[test]
+fn row_group_prunes_pre_epoch_sub_unit_int96_timestamps() {
+    let units = [
+        TimeUnit::Second,
+        TimeUnit::Millisecond,
+        TimeUnit::Microsecond,
+        TimeUnit::Nanosecond,
+    ];
+    for unit in units {
+        let schema = Schema::new(vec![Field::new(
+            "ts",
+            DataType::Timestamp(unit, None),
+            false,
+        )]);
+
+        let props = WriterProperties::builder()
+            .set_statistics_enabled(EnabledStatistics::Chunk)
+            .build();
+
+        let bytes = write_int96_parquet(&[vec![-500], vec![500]], props);
+        let metadata = load_metadata_without_page_index(&bytes);
+
+        let expr = Expr::lt("ts", timestamp_scalar(unit, 0));
+        let result = PruneRequest::new(&metadata, &schema)
+            .with_predicate(&expr)
+            .enable_page_index(false)
+            .prune();
+
+        assert_eq!(
+            result.row_groups(),
+            &[0],
+            "expected pre-epoch prune for {unit:?}"
         );
     }
 }

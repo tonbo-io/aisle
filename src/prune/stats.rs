@@ -299,9 +299,9 @@ pub(super) fn int96_to_timestamp_scalar(
         + i128::from(nanos);
 
     let timestamp = match unit {
-        TimeUnit::Second => nanos_since_epoch / NANOS_IN_SECOND,
-        TimeUnit::Millisecond => nanos_since_epoch / (NANOS_IN_SECOND / 1_000),
-        TimeUnit::Microsecond => nanos_since_epoch / (NANOS_IN_SECOND / 1_000_000),
+        TimeUnit::Second => nanos_since_epoch.div_euclid(NANOS_IN_SECOND),
+        TimeUnit::Millisecond => nanos_since_epoch.div_euclid(NANOS_IN_SECOND / 1_000),
+        TimeUnit::Microsecond => nanos_since_epoch.div_euclid(NANOS_IN_SECOND / 1_000_000),
         TimeUnit::Nanosecond => nanos_since_epoch,
     };
 
@@ -491,10 +491,23 @@ pub(super) fn data_type_for_path(schema: &Schema, path: &str) -> Option<DataType
 mod tests {
     use super::*;
 
+    const JULIAN_DAY_OF_EPOCH: i128 = 2_440_588;
+    const NANOS_PER_DAY: i128 = 86_400_i128 * 1_000_000_000_i128;
+
     fn int96_for_nanos_since_midnight(nanos: u64, julian_day: u32) -> Int96 {
         let low = nanos as u32;
         let high = (nanos >> 32) as u32;
         Int96::from(vec![low, high, julian_day])
+    }
+
+    fn int96_from_timestamp_nanos(nanos: i64) -> Int96 {
+        let nanos = i128::from(nanos);
+        let days_since_epoch = nanos.div_euclid(NANOS_PER_DAY);
+        let nanos_of_day = nanos.rem_euclid(NANOS_PER_DAY);
+        let julian_day = days_since_epoch + JULIAN_DAY_OF_EPOCH;
+        let nanos_of_day = u64::try_from(nanos_of_day).expect("nanos_of_day must fit u64");
+        let julian_day = u32::try_from(julian_day).expect("julian day must fit u32");
+        int96_for_nanos_since_midnight(nanos_of_day, julian_day)
     }
 
     #[test]
@@ -533,6 +546,39 @@ mod tests {
         let data_type = DataType::Timestamp(TimeUnit::Second, None);
         let scalar = int96_to_timestamp_scalar(&int96, &data_type).expect("timestamp scalar");
         assert_eq!(scalar, ScalarValue::TimestampSecond(Some(1), None));
+    }
+
+    #[test]
+    fn int96_timestamp_pre_epoch_sub_unit_rounds_down() {
+        let int96 = int96_from_timestamp_nanos(-500);
+
+        let second_type = DataType::Timestamp(TimeUnit::Second, None);
+        let second = int96_to_timestamp_scalar(&int96, &second_type).expect("timestamp scalar");
+        assert_eq!(second, ScalarValue::TimestampSecond(Some(-1), None));
+
+        let millisecond_type = DataType::Timestamp(TimeUnit::Millisecond, None);
+        let millisecond =
+            int96_to_timestamp_scalar(&int96, &millisecond_type).expect("timestamp scalar");
+        assert_eq!(
+            millisecond,
+            ScalarValue::TimestampMillisecond(Some(-1), None)
+        );
+
+        let microsecond_type = DataType::Timestamp(TimeUnit::Microsecond, None);
+        let microsecond =
+            int96_to_timestamp_scalar(&int96, &microsecond_type).expect("timestamp scalar");
+        assert_eq!(
+            microsecond,
+            ScalarValue::TimestampMicrosecond(Some(-1), None)
+        );
+
+        let nanosecond_type = DataType::Timestamp(TimeUnit::Nanosecond, None);
+        let nanosecond =
+            int96_to_timestamp_scalar(&int96, &nanosecond_type).expect("timestamp scalar");
+        assert_eq!(
+            nanosecond,
+            ScalarValue::TimestampNanosecond(Some(-500), None)
+        );
     }
 
     #[test]
