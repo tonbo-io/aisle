@@ -131,6 +131,26 @@ pub enum Expr {
         column: String,
         values: Vec<ScalarValue>,
     },
+    /// Internal: Dictionary hint equality check (added automatically during compilation).
+    ///
+    /// This variant is an implementation detail for dictionary-hint optimization and
+    /// should not be constructed manually. Use [`Expr::eq`] instead, and dictionary hint
+    /// variants will be added automatically during pruning when enabled.
+    #[doc(hidden)]
+    DictionaryHintEq {
+        column: String,
+        value: ScalarValue,
+    },
+    /// Internal: Dictionary hint IN list check (added automatically during compilation).
+    ///
+    /// This variant is an implementation detail for dictionary-hint optimization and
+    /// should not be constructed manually. Use [`Expr::in_list`] instead, and dictionary hint
+    /// variants will be added automatically during pruning when enabled.
+    #[doc(hidden)]
+    DictionaryHintInList {
+        column: String,
+        values: Vec<ScalarValue>,
+    },
     StartsWith {
         column: String,
         prefix: String,
@@ -291,9 +311,10 @@ impl std::fmt::Display for Expr {
                 write!(f, ")")
             }
             // Hide bloom filter variants from user-facing output
-            Expr::BloomFilterEq { .. } | Expr::BloomFilterInList { .. } => {
-                write!(f, "<bloom filter>")
-            }
+            Expr::BloomFilterEq { .. }
+            | Expr::BloomFilterInList { .. }
+            | Expr::DictionaryHintEq { .. }
+            | Expr::DictionaryHintInList { .. } => write!(f, "<bloom filter>"),
             Expr::StartsWith { column, prefix } => {
                 write!(f, "{} LIKE '{}%'", column, prefix)
             }
@@ -380,10 +401,14 @@ mod tests {
         );
 
         assert_eq!(
-            Expr::in_list("status", vec![
-                ScalarValue::Utf8(Some("active".to_string())),
-                ScalarValue::Utf8(Some("pending".to_string())),
-            ]).to_string(),
+            Expr::in_list(
+                "status",
+                vec![
+                    ScalarValue::Utf8(Some("active".to_string())),
+                    ScalarValue::Utf8(Some("pending".to_string())),
+                ]
+            )
+            .to_string(),
             "status IN (Utf8(\"active\"), Utf8(\"pending\"))"
         );
 

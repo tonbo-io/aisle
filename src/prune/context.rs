@@ -1,9 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use arrow_schema::Schema;
 use parquet::{
     bloom_filter::Sbbf, file::metadata::ParquetMetaData, schema::types::SchemaDescriptor,
 };
+
+use super::provider::DictionaryHintValue;
 
 pub(crate) struct RowGroupContext<'a> {
     pub(crate) metadata: &'a ParquetMetaData,
@@ -11,6 +13,7 @@ pub(crate) struct RowGroupContext<'a> {
     pub(crate) column_lookup: &'a HashMap<String, usize>,
     pub(crate) row_group_idx: usize,
     pub(crate) bloom_filters: Option<HashMap<usize, Sbbf>>,
+    pub(crate) dictionary_hints: Option<HashMap<usize, HashSet<DictionaryHintValue>>>,
     pub(crate) options: &'a super::options::PruneOptions,
 }
 
@@ -18,6 +21,14 @@ impl RowGroupContext<'_> {
     pub(crate) fn bloom_for_column(&self, column: &str) -> Option<&Sbbf> {
         let col_idx = *self.column_lookup.get(column)?;
         self.bloom_filters.as_ref()?.get(&col_idx)
+    }
+
+    pub(crate) fn dictionary_hints_for_column(
+        &self,
+        column: &str,
+    ) -> Option<&HashSet<DictionaryHintValue>> {
+        let col_idx = *self.column_lookup.get(column)?;
+        self.dictionary_hints.as_ref()?.get(&col_idx)
     }
 }
 

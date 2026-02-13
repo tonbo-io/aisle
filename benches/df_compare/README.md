@@ -123,6 +123,7 @@ open benches/df_compare/target/criterion/report/index.html
 ### `dictionary_hints.rs` - Dictionary-Hints Candidate
 - **Purpose:** Isolate dictionary-hint opportunity on selective string equality predicates
 - **Data:** Wide row-group stats (`a_anchor`..`z_anchor`) with target value present in a subset of row groups
+- **Mode:** `enable_dictionary_hints(true)` with provider-supplied per-row-group hint sets
 - **Key Metrics:** Latency, row groups/pages kept, rows read as decode proxy
 
 ## References

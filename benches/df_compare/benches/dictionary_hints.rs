@@ -1,13 +1,15 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 
-use aisle::PruneRequest;
+use aisle::{AsyncBloomFilterProvider, DictionaryHintValue, PruneRequest};
 use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use datafusion_expr::{Expr, col, lit};
 use futures::StreamExt;
+use parquet::bloom_filter::Sbbf;
 use parquet::arrow::arrow_reader::{ArrowReaderOptions, RowSelection};
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::{ArrowWriter, ParquetRecordBatchStreamBuilder};
@@ -108,6 +110,7 @@ fn create_dictionary_candidate_data(
     ParquetMetaData,
     Arc<Schema>,
     String,
+    HashMap<(usize, usize), HashSet<DictionaryHintValue>>,
 ) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -134,6 +137,8 @@ fn create_dictionary_candidate_data(
     let temp_file = tempfile::NamedTempFile::new().expect("temp file");
     let file = std::fs::File::create(temp_file.path()).expect("create parquet");
     let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props)).expect("arrow writer");
+    let mut dictionary_hints: HashMap<(usize, usize), HashSet<DictionaryHintValue>> =
+        HashMap::new();
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(7);
 
@@ -152,6 +157,12 @@ fn create_dictionary_candidate_data(
             let next_common = common_values[(values.len() + row_group_idx) % common_values.len()];
             values.push(next_common.to_string());
         }
+        let hint_values: HashSet<DictionaryHintValue> = values
+            .iter()
+            .cloned()
+            .map(DictionaryHintValue::Utf8)
+            .collect();
+        dictionary_hints.insert((row_group_idx, 1), hint_values);
 
         let mut ids: Vec<i64> = (0..rows_per_group)
             .map(|i| (row_group_idx * rows_per_group + i) as i64)
@@ -181,7 +192,34 @@ fn create_dictionary_candidate_data(
         .parse_and_finish(&Bytes::from(bytes))
         .expect("read metadata");
 
-    (temp_file, metadata, schema, target_key)
+    (temp_file, metadata, schema, target_key, dictionary_hints)
+}
+
+#[derive(Clone)]
+struct StaticDictionaryHintProvider {
+    hints: Arc<HashMap<(usize, usize), HashSet<DictionaryHintValue>>>,
+}
+
+impl StaticDictionaryHintProvider {
+    fn new(hints: HashMap<(usize, usize), HashSet<DictionaryHintValue>>) -> Self {
+        Self {
+            hints: Arc::new(hints),
+        }
+    }
+}
+
+impl AsyncBloomFilterProvider for StaticDictionaryHintProvider {
+    async fn bloom_filter(&mut self, _row_group_idx: usize, _column_idx: usize) -> Option<Sbbf> {
+        None
+    }
+
+    async fn dictionary_hints(
+        &mut self,
+        row_group_idx: usize,
+        column_idx: usize,
+    ) -> Option<HashSet<DictionaryHintValue>> {
+        self.hints.get(&(row_group_idx, column_idx)).cloned()
+    }
 }
 
 fn evaluate_metrics(
@@ -191,12 +229,18 @@ fn evaluate_metrics(
     schema: &Arc<Schema>,
     predicate: &Expr,
     target_key: &str,
+    provider: StaticDictionaryHintProvider,
 ) -> ScenarioMetrics {
-    let result = PruneRequest::new(metadata, schema)
-        .with_df_predicate(predicate)
-        .enable_page_index(false)
-        .enable_bloom_filter(false)
-        .prune();
+    let mut provider = provider;
+    let result = runtime.block_on(async {
+        PruneRequest::new(metadata, schema)
+            .with_df_predicate(predicate)
+            .enable_page_index(false)
+            .enable_bloom_filter(false)
+            .enable_dictionary_hints(true)
+            .prune_async(&mut provider)
+            .await
+    });
 
     let kept_row_groups = result.row_groups().to_vec();
     let all_row_groups: Vec<usize> = (0..metadata.num_row_groups()).collect();
@@ -224,8 +268,9 @@ fn evaluate_metrics(
 fn bench_dictionary_hints_candidate(c: &mut Criterion) {
     let row_groups = 64;
     let rows_per_group = 2_048;
-    let (temp_file, metadata, schema, target_key) =
+    let (temp_file, metadata, schema, target_key, dictionary_hints) =
         create_dictionary_candidate_data(row_groups, rows_per_group);
+    let provider_template = StaticDictionaryHintProvider::new(dictionary_hints);
 
     let predicate = col("key").eq(lit(target_key.clone()));
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -237,10 +282,11 @@ fn bench_dictionary_hints_candidate(c: &mut Criterion) {
         &schema,
         &predicate,
         &target_key,
+        provider_template.clone(),
     );
 
     println!(
-        "Dictionary-hints candidate (baseline): query=key = '{}', row_groups_kept={}/{}, pages_kept={}/{}, rows_read={}, rows_matched={}, decode_proxy={:.1}%",
+        "Dictionary-hints candidate (enabled): query=key = '{}', row_groups_kept={}/{}, pages_kept={}/{}, rows_read={}, rows_matched={}, decode_proxy={:.1}%",
         target_key,
         metrics.row_groups_kept,
         metrics.total_row_groups,
@@ -266,11 +312,14 @@ fn bench_dictionary_hints_candidate(c: &mut Criterion) {
 
     group.bench_function("aisle_prune_plus_scan_candidate", |b| {
         b.to_async(&runtime).iter(|| async {
+            let mut provider = provider_template.clone();
             let result = PruneRequest::new(black_box(&metadata), black_box(&schema))
                 .with_df_predicate(black_box(&predicate))
                 .enable_page_index(false)
                 .enable_bloom_filter(false)
-                .prune();
+                .enable_dictionary_hints(true)
+                .prune_async(&mut provider)
+                .await;
             let stats = scan_file_async(
                 temp_file.path(),
                 result.row_groups(),

@@ -1,7 +1,8 @@
 //! Metadata-driven Parquet pruning for Rust.
 //!
 //! Aisle evaluates [DataFusion] predicates against Parquet metadata (row-group statistics,
-//! page indexes, bloom filters) to determine which data to skip **before reading**, dramatically
+//! page indexes, bloom filters, and optional dictionary hints) to determine which data to skip
+//! **before reading**, dramatically
 //! reducing I/O for selective queries.
 //!
 //! [DataFusion]: https://docs.rs/datafusion-expr
@@ -117,6 +118,7 @@
 //! - **Row-group pruning**: Skip entire row groups using min/max statistics
 //! - **Page-level pruning**: Skip individual pages within row groups
 //! - **Bloom filter support**: Definite absence checks for point queries (`=`, `IN`)
+//! - **Dictionary hints (opt-in)**: Definite absence checks for string/binary `=` and `IN`
 //! - **DataFusion expressions**: Use familiar `col("x").eq(lit(42))` syntax
 //! - **Conservative evaluation**: Never skips data that might match (safety first)
 //! - **Async-first API**: Optimized for remote storage (S3, GCS, Azure)
@@ -213,6 +215,15 @@
 //! impl AsyncBloomFilterProvider for CachedBloomProvider {
 //!     async fn bloom_filter(&mut self, row_group: usize, column: usize) -> Option<Sbbf> {
 //!         // Load from cache or fetch from storage
+//! #       None
+//!     }
+//!
+//!     async fn dictionary_hints(
+//!         &mut self,
+//!         row_group: usize,
+//!         column: usize,
+//!     ) -> Option<std::collections::HashSet<aisle::DictionaryHintValue>> {
+//!         // Optional dictionary hint loading (opt-in via enable_dictionary_hints)
 //! #       None
 //!     }
 //! }
@@ -358,7 +369,8 @@ pub use compile::{CompilePruningIr, compile_pruning_ir};
 pub use error::AisleError;
 pub use expr::{CmpOp, Expr};
 pub use prune::{
-    AsyncBloomFilterProvider, PruneOptions, PruneOptionsBuilder, PruneRequest, PruneResult,
+    AsyncBloomFilterProvider, DictionaryHintValue, PruneOptions, PruneOptionsBuilder, PruneRequest,
+    PruneResult,
 };
 pub use pruner::{CompiledPruner, Pruner};
 pub use result::AisleResult;

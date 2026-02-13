@@ -4,6 +4,7 @@ pub struct PruneOptions {
     enable_page_index: bool,
     emit_roaring: bool,
     enable_bloom_filter: bool,
+    enable_dictionary_hints: bool,
     allow_truncated_byte_array_ordering: bool,
 }
 
@@ -38,6 +39,11 @@ impl PruneOptions {
         self.enable_bloom_filter
     }
 
+    /// Check if dictionary hint pruning is enabled
+    pub fn enable_dictionary_hints(&self) -> bool {
+        self.enable_dictionary_hints
+    }
+
     /// Check if ordering predicates can use truncated byte array statistics.
     ///
     /// Returns `true` if aggressive mode is enabled (allows truncated stats),
@@ -53,6 +59,7 @@ impl Default for PruneOptions {
             enable_page_index: true,
             emit_roaring: true,
             enable_bloom_filter: true,
+            enable_dictionary_hints: false,
             allow_truncated_byte_array_ordering: false,
         }
     }
@@ -64,6 +71,7 @@ pub struct PruneOptionsBuilder {
     enable_page_index: Option<bool>,
     emit_roaring: Option<bool>,
     enable_bloom_filter: Option<bool>,
+    enable_dictionary_hints: Option<bool>,
     allow_truncated_byte_array_ordering: Option<bool>,
 }
 
@@ -118,6 +126,17 @@ impl PruneOptionsBuilder {
         self
     }
 
+    /// Enable or disable dictionary hint pruning (default: false)
+    ///
+    /// Dictionary hints provide definite-absence checks for `=` and `IN`
+    /// predicates when per-row-group dictionary values are available via
+    /// an async provider. The evaluation is conservative: ambiguous/missing
+    /// hints return `Unknown` and keep data.
+    pub fn enable_dictionary_hints(mut self, value: bool) -> Self {
+        self.enable_dictionary_hints = Some(value);
+        self
+    }
+
     /// Allow ordering predicates to use truncated BYTE_ARRAY/FIXED_LEN_BYTE_ARRAY statistics
     /// (default: `false`).
     ///
@@ -152,6 +171,7 @@ impl PruneOptionsBuilder {
             enable_page_index: self.enable_page_index.unwrap_or(true),
             emit_roaring: self.emit_roaring.unwrap_or(true),
             enable_bloom_filter: self.enable_bloom_filter.unwrap_or(true),
+            enable_dictionary_hints: self.enable_dictionary_hints.unwrap_or(false),
             allow_truncated_byte_array_ordering: self
                 .allow_truncated_byte_array_ordering
                 .unwrap_or(false),

@@ -12,13 +12,13 @@ use super::{
     context::{RowGroupContext, build_column_lookup},
     eval,
     options::PruneOptions,
-    provider::AsyncBloomFilterProvider,
+    provider::{AsyncBloomFilterProvider, DictionaryHintValue},
     result::PruneResult,
 };
 use crate::{
     AisleResult,
+    expr::rewrite::{self, MetadataHintConfig},
     expr::{Expr, TriState},
-    expr::rewrite,
     selection::row_selection_to_roaring,
 };
 
@@ -29,8 +29,15 @@ pub(crate) fn prune_compiled(
     options: &PruneOptions,
 ) -> PruneResult {
     let evaluator = PruneEvaluator::new(metadata, schema);
-    let predicates = if options.enable_bloom_filter() {
-        Cow::Owned(rewrite::inject_bloom_filters_all(compile.prunable()))
+    let hints = MetadataHintConfig {
+        bloom: options.enable_bloom_filter(),
+        dictionary: options.enable_dictionary_hints(),
+    };
+    let predicates = if hints.bloom || hints.dictionary {
+        Cow::Owned(rewrite::inject_metadata_hints_all(
+            compile.prunable(),
+            hints,
+        ))
     } else {
         Cow::Borrowed(compile.prunable())
     };
@@ -43,6 +50,7 @@ pub(crate) fn prune_compiled(
         let tri = evaluator.eval_row_group_conjunction(
             predicates.as_ref(),
             row_group_idx,
+            None,
             None,
             options,
         );
@@ -107,8 +115,15 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
     provider: &mut P,
 ) -> PruneResult {
     let evaluator = PruneEvaluator::new(metadata, schema);
-    let predicates = if options.enable_bloom_filter() {
-        Cow::Owned(rewrite::inject_bloom_filters_all(compile.prunable()))
+    let hints = MetadataHintConfig {
+        bloom: options.enable_bloom_filter(),
+        dictionary: options.enable_dictionary_hints(),
+    };
+    let predicates = if hints.bloom || hints.dictionary {
+        Cow::Owned(rewrite::inject_metadata_hints_all(
+            compile.prunable(),
+            hints,
+        ))
     } else {
         Cow::Borrowed(compile.prunable())
     };
@@ -118,6 +133,11 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
 
     let bloom_columns = if options.enable_bloom_filter() {
         collect_bloom_columns(predicates.as_ref())
+    } else {
+        HashSet::new()
+    };
+    let dictionary_columns = if options.enable_dictionary_hints() {
+        collect_dictionary_columns(predicates.as_ref())
     } else {
         HashSet::new()
     };
@@ -135,11 +155,23 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
         } else {
             None
         };
+        let dictionary_hints = if !dictionary_columns.is_empty() {
+            load_dictionary_hints_async(
+                provider,
+                row_group_idx,
+                evaluator.column_lookup(),
+                &dictionary_columns,
+            )
+            .await
+        } else {
+            None
+        };
 
         let tri = evaluator.eval_row_group_conjunction(
             predicates.as_ref(),
             row_group_idx,
             bloom_filters,
+            dictionary_hints,
             options,
         );
         if tri == TriState::False {
@@ -229,6 +261,39 @@ fn collect_bloom_columns_for_expr(expr: &Expr, columns: &mut HashSet<String>) {
         Expr::Cmp { .. }
         | Expr::Between { .. }
         | Expr::InList { .. }
+        | Expr::DictionaryHintEq { .. }
+        | Expr::DictionaryHintInList { .. }
+        | Expr::StartsWith { .. }
+        | Expr::IsNull { .. }
+        | Expr::True
+        | Expr::False => {}
+    }
+}
+
+fn collect_dictionary_columns(predicates: &[Expr]) -> HashSet<String> {
+    let mut columns = HashSet::new();
+    for predicate in predicates {
+        collect_dictionary_columns_for_expr(predicate, &mut columns);
+    }
+    columns
+}
+
+fn collect_dictionary_columns_for_expr(expr: &Expr, columns: &mut HashSet<String>) {
+    match expr {
+        Expr::DictionaryHintEq { column, .. } | Expr::DictionaryHintInList { column, .. } => {
+            columns.insert(column.clone());
+        }
+        Expr::And(parts) | Expr::Or(parts) => {
+            for part in parts {
+                collect_dictionary_columns_for_expr(part, columns);
+            }
+        }
+        Expr::Not(inner) => collect_dictionary_columns_for_expr(inner, columns),
+        Expr::Cmp { .. }
+        | Expr::Between { .. }
+        | Expr::InList { .. }
+        | Expr::BloomFilterEq { .. }
+        | Expr::BloomFilterInList { .. }
         | Expr::StartsWith { .. }
         | Expr::IsNull { .. }
         | Expr::True
@@ -268,6 +333,34 @@ async fn load_bloom_filters_async<P: AsyncBloomFilterProvider>(
     }
 }
 
+async fn load_dictionary_hints_async<P: AsyncBloomFilterProvider>(
+    provider: &mut P,
+    row_group_idx: usize,
+    column_lookup: &HashMap<String, usize>,
+    dictionary_columns: &HashSet<String>,
+) -> Option<HashMap<usize, HashSet<DictionaryHintValue>>> {
+    let mut requests = Vec::new();
+    for column in dictionary_columns {
+        let Some(col_idx) = column_lookup.get(column) else {
+            continue;
+        };
+        requests.push((row_group_idx, *col_idx));
+    }
+    if requests.is_empty() {
+        return None;
+    }
+
+    let batch = provider.dictionary_hints_batch(&requests).await;
+    let mut hints = HashMap::new();
+    for ((rg, col), values) in batch {
+        if rg == row_group_idx {
+            hints.insert(col, values);
+        }
+    }
+
+    if hints.is_empty() { None } else { Some(hints) }
+}
+
 struct PruneEvaluator<'a> {
     metadata: &'a ParquetMetaData,
     schema: &'a Schema,
@@ -292,6 +385,7 @@ impl<'a> PruneEvaluator<'a> {
         &self,
         row_group_idx: usize,
         bloom_filters: Option<HashMap<usize, Sbbf>>,
+        dictionary_hints: Option<HashMap<usize, HashSet<DictionaryHintValue>>>,
         options: &'a PruneOptions,
     ) -> RowGroupContext<'_> {
         RowGroupContext {
@@ -300,6 +394,7 @@ impl<'a> PruneEvaluator<'a> {
             column_lookup: &self.column_lookup,
             row_group_idx,
             bloom_filters,
+            dictionary_hints,
             options,
         }
     }
@@ -309,9 +404,10 @@ impl<'a> PruneEvaluator<'a> {
         predicates: &[Expr],
         row_group_idx: usize,
         bloom_filters: Option<HashMap<usize, Sbbf>>,
+        dictionary_hints: Option<HashMap<usize, HashSet<DictionaryHintValue>>>,
         options: &PruneOptions,
     ) -> TriState {
-        let ctx = self.row_group_context(row_group_idx, bloom_filters, options);
+        let ctx = self.row_group_context(row_group_idx, bloom_filters, dictionary_hints, options);
         eval::eval_conjunction(predicates, &ctx)
     }
 
@@ -321,7 +417,7 @@ impl<'a> PruneEvaluator<'a> {
         row_group_idx: usize,
         options: &PruneOptions,
     ) -> Option<RowSelection> {
-        let ctx = self.row_group_context(row_group_idx, None, options);
+        let ctx = self.row_group_context(row_group_idx, None, None, options);
         eval::page_selection_for_predicates(predicates, &ctx)
     }
 }

@@ -1,9 +1,39 @@
-use std::{collections::HashMap, future::Future};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+};
 
+use datafusion_common::ScalarValue;
 use parquet::{
     arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder},
     bloom_filter::Sbbf,
 };
+
+/// Canonical value representation used by dictionary-hint providers.
+///
+/// Only string and binary values are included in this MVP. Unsupported value
+/// types are ignored conservatively by dictionary-hint evaluation.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum DictionaryHintValue {
+    Utf8(String),
+    Binary(Vec<u8>),
+}
+
+impl DictionaryHintValue {
+    /// Convert a [`ScalarValue`] into a dictionary-hint value when supported.
+    pub fn from_scalar(value: &ScalarValue) -> Option<Self> {
+        match value {
+            ScalarValue::Utf8(Some(v))
+            | ScalarValue::LargeUtf8(Some(v))
+            | ScalarValue::Utf8View(Some(v)) => Some(Self::Utf8(v.clone())),
+            ScalarValue::Binary(Some(v))
+            | ScalarValue::LargeBinary(Some(v))
+            | ScalarValue::BinaryView(Some(v))
+            | ScalarValue::FixedSizeBinary(_, Some(v)) => Some(Self::Binary(v.clone())),
+            _ => None,
+        }
+    }
+}
 
 /// Async bloom filter provider trait for custom I/O strategies.
 ///
@@ -180,6 +210,37 @@ pub trait AsyncBloomFilterProvider {
             for &(row_group_idx, column_idx) in requests {
                 if let Some(filter) = self.bloom_filter(row_group_idx, column_idx).await {
                     result.insert((row_group_idx, column_idx), filter);
+                }
+            }
+            result
+        }
+    }
+
+    /// Load dictionary hint values for a specific column in a row group.
+    ///
+    /// Returns `None` when hints are not available. This is the default behavior
+    /// for providers that do not implement dictionary hints.
+    fn dictionary_hints(
+        &mut self,
+        _row_group_idx: usize,
+        _column_idx: usize,
+    ) -> impl Future<Output = Option<HashSet<DictionaryHintValue>>> + '_ {
+        async { None }
+    }
+
+    /// Batch dictionary hint lookup for multiple (row_group, column) pairs.
+    ///
+    /// Default implementation executes requests sequentially by calling
+    /// [`dictionary_hints`](Self::dictionary_hints).
+    fn dictionary_hints_batch<'a>(
+        &'a mut self,
+        requests: &'a [(usize, usize)],
+    ) -> impl Future<Output = HashMap<(usize, usize), HashSet<DictionaryHintValue>>> + 'a {
+        async move {
+            let mut result = HashMap::new();
+            for &(row_group_idx, column_idx) in requests {
+                if let Some(hints) = self.dictionary_hints(row_group_idx, column_idx).await {
+                    result.insert((row_group_idx, column_idx), hints);
                 }
             }
             result

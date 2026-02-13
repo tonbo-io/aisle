@@ -13,7 +13,9 @@
 use parquet::arrow::arrow_reader::RowSelection;
 
 pub(in crate::prune) use super::context::RowGroupContext;
-use super::{between, bloom, cmp, in_list, is_null, page, page::PagePruning, starts_with};
+use super::{
+    between, bloom, cmp, dictionary, in_list, is_null, page, page::PagePruning, starts_with,
+};
 use crate::expr::{Expr, TriState};
 
 pub(super) fn eval_conjunction(predicates: &[Expr], ctx: &RowGroupContext<'_>) -> TriState {
@@ -42,6 +44,12 @@ pub(super) fn eval_expr(expr: &Expr, ctx: &RowGroupContext<'_>) -> TriState {
         Expr::BloomFilterEq { column, value } => bloom::eval_bloom_eq(column, value, ctx),
         Expr::BloomFilterInList { column, values } => {
             bloom::eval_bloom_in_list(column, values, ctx)
+        }
+        Expr::DictionaryHintEq { column, value } => {
+            dictionary::eval_dictionary_eq(column, value, ctx)
+        }
+        Expr::DictionaryHintInList { column, values } => {
+            dictionary::eval_dictionary_in_list(column, values, ctx)
         }
         Expr::StartsWith { column, prefix } => starts_with::eval_starts_with(column, prefix, ctx),
         Expr::IsNull { column, negated } => is_null::eval_is_null(column, *negated, ctx),
@@ -103,7 +111,10 @@ pub(super) fn page_selection_for_expr(
             inclusive,
         } => between::page_selection_for_between(column, low, high, *inclusive, ctx),
         Expr::InList { column, values } => in_list::page_selection_for_in_list(column, values, ctx),
-        Expr::BloomFilterEq { .. } | Expr::BloomFilterInList { .. } => None,
+        Expr::BloomFilterEq { .. }
+        | Expr::BloomFilterInList { .. }
+        | Expr::DictionaryHintEq { .. }
+        | Expr::DictionaryHintInList { .. } => None,
         Expr::StartsWith { column, prefix } => {
             starts_with::page_selection_for_starts_with(column, prefix, ctx)
         }

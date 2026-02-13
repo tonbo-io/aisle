@@ -107,8 +107,11 @@ impl RowFilter {
                 let inner = self.evaluate_expr(expr, batch)?;
                 Ok(arith_boolean::not(&inner)?)
             }
-            // Bloom filter variants are metadata-only, treat as True for row filtering
-            IrExpr::BloomFilterEq { .. } | IrExpr::BloomFilterInList { .. } => {
+            // Metadata-hint variants are metadata-only, treat as True for row filtering
+            IrExpr::BloomFilterEq { .. }
+            | IrExpr::BloomFilterInList { .. }
+            | IrExpr::DictionaryHintEq { .. }
+            | IrExpr::DictionaryHintInList { .. } => {
                 Ok(BooleanArray::from(vec![true; batch.num_rows()]))
             }
         }
@@ -784,7 +787,10 @@ fn collect_ir_columns(expr: &IrExpr, columns: &mut HashSet<String>) {
             }
         }
         IrExpr::Not(expr) => collect_ir_columns(expr, columns),
-        IrExpr::BloomFilterEq { column, .. } | IrExpr::BloomFilterInList { column, .. } => {
+        IrExpr::BloomFilterEq { column, .. }
+        | IrExpr::BloomFilterInList { column, .. }
+        | IrExpr::DictionaryHintEq { column, .. }
+        | IrExpr::DictionaryHintInList { column, .. } => {
             columns.insert(column.clone());
         }
     }
