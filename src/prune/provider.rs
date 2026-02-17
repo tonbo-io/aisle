@@ -35,6 +35,19 @@ impl DictionaryHintValue {
     }
 }
 
+/// Evidence returned by dictionary-hint providers.
+///
+/// Pruning is only allowed for [`DictionaryHintEvidence::Exact`] values.
+/// Any uncertain evidence must be reported as [`DictionaryHintEvidence::Unknown`]
+/// to preserve conservative correctness.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DictionaryHintEvidence {
+    /// Complete and exact dictionary values for a row-group column.
+    Exact(HashSet<DictionaryHintValue>),
+    /// Missing or inexact evidence (must not be used for definitive pruning).
+    Unknown,
+}
+
 /// Async bloom filter provider trait for custom I/O strategies.
 ///
 /// This trait allows users to implement custom bloom filter loading strategies,
@@ -216,32 +229,37 @@ pub trait AsyncBloomFilterProvider {
         }
     }
 
-    /// Load dictionary hint values for a specific column in a row group.
+    /// Load dictionary hint evidence for a specific column in a row group.
     ///
-    /// Returns `None` when hints are not available. This is the default behavior
-    /// for providers that do not implement dictionary hints.
+    /// # Correctness Contract
+    ///
+    /// Return [`DictionaryHintEvidence::Exact`] **only** when the returned set is
+    /// complete for that `(row_group_idx, column_idx)` pair.
+    ///
+    /// If values are partial, sampled, stale, or unavailable, return
+    /// [`DictionaryHintEvidence::Unknown`]. This ensures Aisle remains conservative
+    /// and does not prune matching data.
     fn dictionary_hints(
         &mut self,
         _row_group_idx: usize,
         _column_idx: usize,
-    ) -> impl Future<Output = Option<HashSet<DictionaryHintValue>>> + '_ {
-        async { None }
+    ) -> impl Future<Output = DictionaryHintEvidence> + '_ {
+        async { DictionaryHintEvidence::Unknown }
     }
 
-    /// Batch dictionary hint lookup for multiple (row_group, column) pairs.
+    /// Batch dictionary hint evidence lookup for multiple (row_group, column) pairs.
     ///
     /// Default implementation executes requests sequentially by calling
     /// [`dictionary_hints`](Self::dictionary_hints).
     fn dictionary_hints_batch<'a>(
         &'a mut self,
         requests: &'a [(usize, usize)],
-    ) -> impl Future<Output = HashMap<(usize, usize), HashSet<DictionaryHintValue>>> + 'a {
+    ) -> impl Future<Output = HashMap<(usize, usize), DictionaryHintEvidence>> + 'a {
         async move {
             let mut result = HashMap::new();
             for &(row_group_idx, column_idx) in requests {
-                if let Some(hints) = self.dictionary_hints(row_group_idx, column_idx).await {
-                    result.insert((row_group_idx, column_idx), hints);
-                }
+                let hints = self.dictionary_hints(row_group_idx, column_idx).await;
+                result.insert((row_group_idx, column_idx), hints);
             }
             result
         }

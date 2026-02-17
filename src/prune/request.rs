@@ -200,7 +200,7 @@ impl<'a> PruneRequest<'a> {
     ///
     /// Dictionary hints are conservative definite-absence checks for `=` and `IN`
     /// predicates. They are opt-in and require an async provider that supplies
-    /// per-row-group dictionary values.
+    /// complete per-row-group dictionary evidence.
     ///
     /// Defaults to `false`.
     pub fn enable_dictionary_hints(mut self, enable: bool) -> Self {

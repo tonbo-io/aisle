@@ -237,7 +237,7 @@ Not yet supported (treated conservatively as "unknown"):
 
 - LIKE support is limited: Only prefix patterns (`'prefix%'`) are pushed down.
 
-- Dictionary hints are provider-driven (MVP): dictionary hints are opt-in (`.enable_dictionary_hints(true)`) and require an async provider implementation that returns per-row-group hint sets.
+- Dictionary hints are provider-driven (MVP): dictionary hints are opt-in (`.enable_dictionary_hints(true)`) and require an async provider implementation that returns **exact** per-row-group dictionary evidence.
 
 ## Usage Examples
 
@@ -261,7 +261,18 @@ let result = PruneRequest::new(&metadata, &schema)
 
 **Async with dictionary hints (opt-in):**
 ```rust
-use aisle::{AsyncBloomFilterProvider, DictionaryHintValue, PruneRequest};
+use aisle::{
+    AsyncBloomFilterProvider, DictionaryHintEvidence, DictionaryHintValue, PruneRequest,
+};
+
+impl AsyncBloomFilterProvider for MyProvider {
+    async fn dictionary_hints(&mut self, rg: usize, col: usize) -> DictionaryHintEvidence {
+        // Return Exact only when the set is complete for (rg, col).
+        DictionaryHintEvidence::Exact(std::collections::HashSet::from([
+            DictionaryHintValue::Utf8("value".to_string()),
+        ]))
+    }
+}
 
 let result = PruneRequest::new(&metadata, &schema)
     .with_predicate(&predicate)

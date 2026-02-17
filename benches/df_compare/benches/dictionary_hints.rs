@@ -2,7 +2,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 
-use aisle::{AsyncBloomFilterProvider, DictionaryHintValue, PruneRequest};
+use aisle::{
+    AsyncBloomFilterProvider, DictionaryHintEvidence, DictionaryHintValue, PruneRequest,
+};
 use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
@@ -217,8 +219,11 @@ impl AsyncBloomFilterProvider for StaticDictionaryHintProvider {
         &mut self,
         row_group_idx: usize,
         column_idx: usize,
-    ) -> Option<HashSet<DictionaryHintValue>> {
-        self.hints.get(&(row_group_idx, column_idx)).cloned()
+    ) -> DictionaryHintEvidence {
+        match self.hints.get(&(row_group_idx, column_idx)) {
+            Some(values) => DictionaryHintEvidence::Exact(values.clone()),
+            None => DictionaryHintEvidence::Unknown,
+        }
     }
 }
 
@@ -300,12 +305,15 @@ fn bench_dictionary_hints_candidate(c: &mut Criterion) {
     let mut group = c.benchmark_group("dictionary_hints_candidate");
 
     group.bench_function("aisle_metadata_only_candidate", |b| {
-        b.iter(|| {
+        b.to_async(&runtime).iter(|| async {
+            let mut provider = provider_template.clone();
             let result = PruneRequest::new(black_box(&metadata), black_box(&schema))
                 .with_df_predicate(black_box(&predicate))
                 .enable_page_index(false)
                 .enable_bloom_filter(false)
-                .prune();
+                .enable_dictionary_hints(true)
+                .prune_async(&mut provider)
+                .await;
             black_box(result.row_groups());
         });
     });

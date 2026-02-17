@@ -1,4 +1,5 @@
 use super::Expr;
+use datafusion_common::ScalarValue;
 
 // Internal rewrite passes to make expressions bloom-aware.
 ///
@@ -88,7 +89,7 @@ fn with_metadata_hints_if_applicable(rule: Expr, config: MetadataHintConfig) -> 
                     value: value.clone(),
                 });
             }
-            if config.dictionary {
+            if config.dictionary && is_dictionary_supported_scalar(&value) {
                 parts.push(Expr::DictionaryHintEq {
                     column: column.clone(),
                     value: value.clone(),
@@ -111,7 +112,7 @@ fn with_metadata_hints_if_applicable(rule: Expr, config: MetadataHintConfig) -> 
                     values: values.clone(),
                 });
             }
-            if config.dictionary {
+            if config.dictionary && is_dictionary_supported_in_list(&values) {
                 parts.push(Expr::DictionaryHintInList {
                     column: column.clone(),
                     values: values.clone(),
@@ -127,10 +128,26 @@ fn with_metadata_hints_if_applicable(rule: Expr, config: MetadataHintConfig) -> 
     }
 }
 
+fn is_dictionary_supported_scalar(value: &ScalarValue) -> bool {
+    matches!(
+        value,
+        ScalarValue::Utf8(Some(_))
+            | ScalarValue::LargeUtf8(Some(_))
+            | ScalarValue::Utf8View(Some(_))
+            | ScalarValue::Binary(Some(_))
+            | ScalarValue::LargeBinary(Some(_))
+            | ScalarValue::BinaryView(Some(_))
+            | ScalarValue::FixedSizeBinary(_, Some(_))
+    )
+}
+
+fn is_dictionary_supported_in_list(values: &[ScalarValue]) -> bool {
+    !values.is_empty() && values.iter().all(is_dictionary_supported_scalar)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion_common::ScalarValue;
 
     #[test]
     fn bloom_injection_respects_negation_polarity() {
@@ -351,5 +368,47 @@ mod tests {
             },
         );
         assert_eq!(format!("{:?}", injected), format!("{:?}", expr));
+    }
+
+    #[test]
+    fn dictionary_not_injected_for_unsupported_cmp_literal() {
+        let expr = Expr::eq("id", ScalarValue::Int64(Some(42)));
+        let injected = inject_metadata_hints(
+            expr,
+            MetadataHintConfig {
+                bloom: false,
+                dictionary: true,
+            },
+        );
+        assert!(matches!(injected, Expr::Cmp { .. }));
+    }
+
+    #[test]
+    fn dictionary_not_injected_for_mixed_or_empty_in_list() {
+        let mixed = Expr::in_list(
+            "s",
+            vec![
+                ScalarValue::Utf8(Some("alpha".to_string())),
+                ScalarValue::Int32(Some(7)),
+            ],
+        );
+        let mixed_injected = inject_metadata_hints(
+            mixed,
+            MetadataHintConfig {
+                bloom: false,
+                dictionary: true,
+            },
+        );
+        assert!(matches!(mixed_injected, Expr::InList { .. }));
+
+        let empty = Expr::in_list("s", vec![]);
+        let empty_injected = inject_metadata_hints(
+            empty,
+            MetadataHintConfig {
+                bloom: false,
+                dictionary: true,
+            },
+        );
+        assert!(matches!(empty_injected, Expr::InList { .. }));
     }
 }

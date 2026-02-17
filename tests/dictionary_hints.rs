@@ -3,8 +3,10 @@ use std::{
     sync::Arc,
 };
 
-use aisle::{AsyncBloomFilterProvider, DictionaryHintValue, Expr, PruneRequest};
-use arrow_array::{RecordBatch, StringArray};
+use aisle::{
+    AsyncBloomFilterProvider, DictionaryHintEvidence, DictionaryHintValue, Expr, PruneRequest,
+};
+use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use datafusion_common::ScalarValue;
@@ -56,9 +58,12 @@ impl AsyncBloomFilterProvider for MockDictionaryProvider {
         &mut self,
         row_group_idx: usize,
         column_idx: usize,
-    ) -> Option<HashSet<DictionaryHintValue>> {
+    ) -> DictionaryHintEvidence {
         self.dictionary_calls.push((row_group_idx, column_idx));
-        self.hints.get(&(row_group_idx, column_idx)).cloned()
+        match self.hints.get(&(row_group_idx, column_idx)) {
+            Some(values) => DictionaryHintEvidence::Exact(values.clone()),
+            None => DictionaryHintEvidence::Unknown,
+        }
     }
 }
 
@@ -189,5 +194,46 @@ async fn dictionary_hints_disabled_no_regression() {
     assert!(
         provider.dictionary_calls.is_empty(),
         "dictionary provider should not be called when hints are disabled"
+    );
+}
+
+#[tokio::test]
+async fn dictionary_hints_not_called_for_unsupported_literal_types() {
+    let schema = Schema::new(vec![Field::new("n", DataType::Int64, false)]);
+    let batch1 = RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![Arc::new(Int64Array::from(vec![1, 2]))],
+    )
+    .unwrap();
+    let batch2 = RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![Arc::new(Int64Array::from(vec![42, 99]))],
+    )
+    .unwrap();
+
+    let props = WriterProperties::builder()
+        .set_statistics_enabled(EnabledStatistics::None)
+        .set_dictionary_enabled(true)
+        .set_max_row_group_size(2)
+        .build();
+
+    let bytes = write_parquet_bytes(&[batch1, batch2], props);
+    let metadata = load_metadata(&bytes);
+
+    let mut provider = MockDictionaryProvider::default();
+    let expr = Expr::eq("n", ScalarValue::Int64(Some(42)));
+    let result = PruneRequest::new(&metadata, &schema)
+        .with_predicate(&expr)
+        .enable_page_index(false)
+        .enable_bloom_filter(false)
+        .enable_dictionary_hints(true)
+        .emit_roaring(false)
+        .prune_async(&mut provider)
+        .await;
+
+    assert_eq!(result.row_groups(), &[0, 1]);
+    assert!(
+        provider.dictionary_calls.is_empty(),
+        "dictionary provider should not be called for unsupported literal types"
     );
 }

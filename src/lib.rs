@@ -222,9 +222,9 @@
 //!         &mut self,
 //!         row_group: usize,
 //!         column: usize,
-//!     ) -> Option<std::collections::HashSet<aisle::DictionaryHintValue>> {
-//!         // Optional dictionary hint loading (opt-in via enable_dictionary_hints)
-//! #       None
+//!     ) -> aisle::DictionaryHintEvidence {
+//!         // Return Exact only when the set is complete for (row_group, column).
+//! #       aisle::DictionaryHintEvidence::Unknown
 //!     }
 //! }
 //! ```
@@ -369,8 +369,8 @@ pub use compile::{CompilePruningIr, compile_pruning_ir};
 pub use error::AisleError;
 pub use expr::{CmpOp, Expr};
 pub use prune::{
-    AsyncBloomFilterProvider, DictionaryHintValue, PruneOptions, PruneOptionsBuilder, PruneRequest,
-    PruneResult,
+    AsyncBloomFilterProvider, DictionaryHintEvidence, DictionaryHintValue, PruneOptions,
+    PruneOptionsBuilder, PruneRequest, PruneResult,
 };
 pub use pruner::{CompiledPruner, Pruner};
 pub use result::AisleResult;

@@ -129,8 +129,8 @@ impl PruneOptionsBuilder {
     /// Enable or disable dictionary hint pruning (default: false)
     ///
     /// Dictionary hints provide definite-absence checks for `=` and `IN`
-    /// predicates when per-row-group dictionary values are available via
-    /// an async provider. The evaluation is conservative: ambiguous/missing
+    /// predicates when complete per-row-group dictionary evidence is available
+    /// via an async provider. The evaluation is conservative: ambiguous/missing
     /// hints return `Unknown` and keep data.
     pub fn enable_dictionary_hints(mut self, value: bool) -> Self {
         self.enable_dictionary_hints = Some(value);

@@ -311,10 +311,13 @@ impl std::fmt::Display for Expr {
                 write!(f, ")")
             }
             // Hide bloom filter variants from user-facing output
-            Expr::BloomFilterEq { .. }
-            | Expr::BloomFilterInList { .. }
-            | Expr::DictionaryHintEq { .. }
-            | Expr::DictionaryHintInList { .. } => write!(f, "<bloom filter>"),
+            Expr::BloomFilterEq { .. } | Expr::BloomFilterInList { .. } => {
+                write!(f, "<bloom filter>")
+            }
+            // Hide dictionary-hint variants from user-facing output
+            Expr::DictionaryHintEq { .. } | Expr::DictionaryHintInList { .. } => {
+                write!(f, "<dictionary hint>")
+            }
             Expr::StartsWith { column, prefix } => {
                 write!(f, "{} LIKE '{}%'", column, prefix)
             }
@@ -388,6 +391,12 @@ mod tests {
             },
         ]);
         assert_eq!(compiled.to_string(), "(id = Int64(42) AND <bloom filter>)");
+
+        let dict = Expr::DictionaryHintEq {
+            column: "id".to_string(),
+            value: ScalarValue::Int64(Some(42)),
+        };
+        assert_eq!(dict.to_string(), "<dictionary hint>");
     }
 
     #[test]

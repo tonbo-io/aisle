@@ -18,6 +18,6 @@ mod strings;
 
 pub(crate) use api::{prune_compiled, prune_compiled_with_bloom_provider};
 pub use options::{PruneOptions, PruneOptionsBuilder};
-pub use provider::{AsyncBloomFilterProvider, DictionaryHintValue};
+pub use provider::{AsyncBloomFilterProvider, DictionaryHintEvidence, DictionaryHintValue};
 pub use request::PruneRequest;
 pub use result::PruneResult;

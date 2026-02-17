@@ -12,7 +12,7 @@ use super::{
     context::{RowGroupContext, build_column_lookup},
     eval,
     options::PruneOptions,
-    provider::{AsyncBloomFilterProvider, DictionaryHintValue},
+    provider::{AsyncBloomFilterProvider, DictionaryHintEvidence, DictionaryHintValue},
     result::PruneResult,
 };
 use crate::{
@@ -352,8 +352,11 @@ async fn load_dictionary_hints_async<P: AsyncBloomFilterProvider>(
 
     let batch = provider.dictionary_hints_batch(&requests).await;
     let mut hints = HashMap::new();
-    for ((rg, col), values) in batch {
-        if rg == row_group_idx {
+    for ((rg, col), evidence) in batch {
+        if rg != row_group_idx {
+            continue;
+        }
+        if let DictionaryHintEvidence::Exact(values) = evidence {
             hints.insert(col, values);
         }
     }
