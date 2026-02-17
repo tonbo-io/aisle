@@ -5,32 +5,45 @@
 - Date (UTC): 2026-02-17
 - Git commit: `172f55a` + local review fixes
 - Branch: `feat/dictionary-hints-mvp`
-- Baseline ID: `dict_hints_before`
-- Benchmark command:
+- Historical baseline ID (non-comparable): `dict_hints_before`
+- Contract-correct baseline ID (comparable): `dict_hints_after_contract`
+
+Benchmark commands used:
 
 ```bash
-cargo bench --manifest-path benches/df_compare/Cargo.toml --bench dictionary_hints -- --sample-size 10
+# Comparable (current semantics)
+cargo bench --manifest-path benches/df_compare/Cargo.toml --bench dictionary_hints -- --baseline dict_hints_after_contract --sample-size 10
 ```
 
-## PR-Ready Measured Impact
+## Methodology / Comparability
 
-### Latency
+- `dictionary_hints_candidate/aisle_metadata_only_candidate` changed from sync `prune()` to async `prune_async()` with `.enable_dictionary_hints(true)`.
+- This means dictionary evidence lookup and provider overhead are now part of the benchmark path by design.
+- Therefore, `dict_hints_before` vs current metadata-only timing is historical context, not an apples-to-apples performance trend.
+- For ongoing tracking, use the contract-correct baseline `dict_hints_after_contract`.
+
+## Comparable Latency (Use This for Tracking)
 
 - `dictionary_hints_candidate/aisle_metadata_only_candidate`
-  - Before: `[18.218 µs, 19.680 µs, 21.266 µs]`
-  - After: `[97.859 µs, 98.446 µs, 99.220 µs]`
-  - Delta (midpoint): `+400.23%`
-  - Speedup: `0.20x`
-  - Criterion significance: `p = 0.00 < 0.05` (performance regressed)
+  - Before (`dict_hints_after_contract`): `[95.083 µs, 95.425 µs, 96.209 µs]`
+  - After: `[95.815 µs, 104.98 µs, 111.42 µs]`
+  - Criterion change: `[-2.5065% +3.4316% +9.6942%]`
+  - Significance: `p = 0.36 > 0.05` (no statistically significant change)
 
 - `dictionary_hints_candidate/aisle_prune_plus_scan_candidate`
-  - Before: `[17.150 ms, 19.493 ms, 22.167 ms]`
-  - After: `[604.26 µs, 624.81 µs, 641.68 µs]`
-  - Delta (midpoint): `-96.79%`
-  - Speedup: `31.20x`
-  - Criterion significance: `p = 0.00 < 0.05` (performance improved)
+  - Before (`dict_hints_after_contract`): `[754.73 µs, 770.99 µs, 792.24 µs]`
+  - After: `[690.91 µs, 732.65 µs, 782.26 µs]`
+  - Criterion change: `[-8.2510% +1.6683% +14.609%]`
+  - Significance: `p = 0.82 > 0.05` (no statistically significant change)
 
-### Pruning / Read / Decode Indicators
+## Historical Context (Non-Comparable)
+
+- `dictionary_hints_candidate/aisle_metadata_only_candidate`
+  - Historical before (`dict_hints_before`): `[18.218 µs, 19.680 µs, 21.266 µs]`
+  - Current (new semantics): `[97.859 µs, 98.446 µs, 99.220 µs]`
+  - This reflects benchmark-path expansion (dictionary async lookup path included), not a direct same-method regression.
+
+## Pruning / Read / Decode Indicators
 
 Scenario: `key = 'target_07'`
 
@@ -42,6 +55,6 @@ Scenario: `key = 'target_07'`
 
 ## Notes
 
-- The metadata-only benchmark now uses async pruning with dictionary evidence enabled (`enable_dictionary_hints(true)`), so it includes provider lookup overhead by design.
-- Dictionary hints are opt-in (`enable_dictionary_hints(true)`) and conservative: only exact provider evidence is used for pruning; missing/ambiguous evidence falls back to `Unknown` (keep data).
-- Confidence intervals are benchmark-time ranges reported by Criterion for each run.
+- Dictionary hints are opt-in (`enable_dictionary_hints(true)`).
+- Pruning uses dictionary evidence only when provider returns `DictionaryHintEvidence::Exact`.
+- Missing/inexact evidence falls back to `Unknown` (keep data).
