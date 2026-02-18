@@ -20,6 +20,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ `PruneRequest` builder API for one-shot operations
 - ✅ `Pruner` for stateful reuse across predicates
 - ✅ `PruneResult` with row_groups, row_selection, roaring_bitmap, compile_result
+- ✅ Projection-aware pruning outputs (`with_output_projection`, `required_columns`, projection masks)
 - ✅ `PruneOptions` for configuration
 - ✅ `AsyncBloomFilterProvider` trait for custom bloom filter loading
 - ✅ Internal `concat_selections` for row-group alignment
@@ -57,6 +58,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ 117 tests passing across all suites
 - ✅ Unit tests for all modules
 - ✅ Integration tests for row-group and page-level pruning
+- ✅ Projection pushdown integration tests (required columns + reader projection masks)
 - ✅ Async bloom filter tests
 - ✅ Cast support tests
 - ✅ Null count edge case tests
@@ -137,11 +139,13 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 
 ## Post-v0.2.0 Roadmap
 
-1. **Benchmarking suite** (measure I/O reduction, overhead)
-2. **Performance profiling** (optimize hot paths)
-3. **Dictionary encoding hints** (optimize string comparisons)
-4. **Projection pushdown** (column pruning)
-5. **Broader logical type coverage** (where metadata semantics can be made safe)
+1. **Temporal type support** (Date32/Date64, Timestamp)
+2. **Decimal type support** (Decimal128/Decimal256)
+3. **Benchmarking suite** (measure I/O reduction, overhead)
+4. **Performance profiling** (optimize hot paths)
+5. **Dictionary encoding hints** (optimize string comparisons)
+6. **Projection pushdown** (column pruning)
+7. **Broader logical type coverage** (where metadata semantics can remain conservative-safe)
 
 ## References
 

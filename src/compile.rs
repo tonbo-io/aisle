@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use arrow_schema::{DataType, Field, Schema};
 use datafusion_common::{Column, ScalarValue};
 use datafusion_expr::{
     Between, BinaryExpr, Expr as DfExpr, Operator,
     expr::{InList, Like},
-    utils::split_conjunction,
+    utils::{expr_to_columns, split_conjunction},
 };
 
 use crate::{
@@ -177,6 +177,44 @@ impl CompilePruningIr for DfExpr {
 pub fn compile_pruning_ir(expr: &DfExpr, schema: &Schema) -> AisleResult {
     let schema_index = build_schema_path_index(schema);
     compile_pruning_ir_with_index(expr, schema, &schema_index)
+}
+
+/// Best-effort extraction of referenced columns from a DataFusion expression.
+///
+/// Returns fully qualified path candidates plus unqualified column names. The
+/// additional unqualified names ensure projection masks continue to work for
+/// table-qualified references against bare Parquet schemas.
+pub(crate) fn collect_columns_from_df_expr(expr: &DfExpr) -> Option<Vec<String>> {
+    let mut columns = HashSet::new();
+    expr_to_columns(expr, &mut columns).ok()?;
+
+    let mut names = BTreeSet::new();
+    for column in columns {
+        if !column.name.is_empty() {
+            names.insert(column.name.clone());
+        }
+
+        let Some(relation) = &column.relation else {
+            continue;
+        };
+
+        let qualified = if let Some(catalog) = relation.catalog() {
+            format!(
+                "{}.{}.{}.{}",
+                catalog,
+                relation.schema().unwrap(),
+                relation.table(),
+                column.name
+            )
+        } else if let Some(schema) = relation.schema() {
+            format!("{}.{}.{}", schema, relation.table(), column.name)
+        } else {
+            format!("{}.{}", relation.table(), column.name)
+        };
+        names.insert(qualified);
+    }
+
+    Some(names.into_iter().collect())
 }
 
 pub(crate) fn compile_pruning_ir_with_index(

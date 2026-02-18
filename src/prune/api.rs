@@ -17,8 +17,8 @@ use super::{
 };
 use crate::{
     AisleResult,
-    expr::{Expr, TriState},
     expr::rewrite,
+    expr::{Expr, TriState},
     selection::row_selection_to_roaring,
 };
 
@@ -27,6 +27,8 @@ pub(crate) fn prune_compiled(
     schema: &Schema,
     compile: AisleResult,
     options: &PruneOptions,
+    output_projection: Option<Vec<String>>,
+    predicate_columns: Option<Vec<String>>,
 ) -> PruneResult {
     let evaluator = PruneEvaluator::new(metadata, schema);
     let predicates = if options.enable_bloom_filter() {
@@ -40,12 +42,8 @@ pub(crate) fn prune_compiled(
 
     for row_group_idx in 0..metadata.num_row_groups() {
         let row_count = metadata.row_group(row_group_idx).num_rows() as usize;
-        let tri = evaluator.eval_row_group_conjunction(
-            predicates.as_ref(),
-            row_group_idx,
-            None,
-            options,
-        );
+        let tri =
+            evaluator.eval_row_group_conjunction(predicates.as_ref(), row_group_idx, None, options);
         if tri == TriState::False {
             continue;
         }
@@ -96,7 +94,14 @@ pub(crate) fn prune_compiled(
         }
     });
 
-    PruneResult::new(row_groups, row_selection, roaring, compile)
+    PruneResult::new(
+        row_groups,
+        row_selection,
+        roaring,
+        compile,
+        output_projection,
+        predicate_columns,
+    )
 }
 
 pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvider>(
@@ -105,6 +110,8 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
     compile: AisleResult,
     options: &PruneOptions,
     provider: &mut P,
+    output_projection: Option<Vec<String>>,
+    predicate_columns: Option<Vec<String>>,
 ) -> PruneResult {
     let evaluator = PruneEvaluator::new(metadata, schema);
     let predicates = if options.enable_bloom_filter() {
@@ -192,7 +199,14 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
         }
     });
 
-    PruneResult::new(row_groups, row_selection, roaring, compile)
+    PruneResult::new(
+        row_groups,
+        row_selection,
+        roaring,
+        compile,
+        output_projection,
+        predicate_columns,
+    )
 }
 
 fn concat_selections(selections: &[(usize, Option<RowSelection>)]) -> RowSelection {

@@ -112,6 +112,7 @@ Tips: Combine Aisle with proper Parquet configuration:
 - Row-group pruning: Skip entire row groups using min/max statistics
 - Page-level pruning: Skip individual pages within row groups
 - Bloom filter support: Definite absence checks for point queries (`=`, `IN`)
+- Projection metadata: Expose predicate/output required columns for reader projection masks
 - Aisle expressions: Build metadata-safe predicates with `Expr::...` (optional DataFusion compilation via `with_df_predicate` + `datafusion` feature)
 - Conservative evaluation: Never skips data that might match (safety first)
 - Async-first API: Optimized for remote storage (S3, GCS, Azure)
@@ -161,6 +162,7 @@ Tips: Combine Aisle with proper Parquet configuration:
 │              Pruning Result                         │
 │   row_groups: [2, 5, 7]  <- Only these needed!      │
 │   row_selection: Some(...) <- Page-level selection  │
+│   required_columns: ["user_id", "age", "payload"]  │
 │   compile_result: Unsupported predicates logged     │
 └─────────────────────┬───────────────────────────────┘
                       │
@@ -264,6 +266,25 @@ let result = PruneRequest::new(&metadata, &schema)
     .with_predicate(&predicate)
     .enable_bloom_filter(true)
     .prune_async(&mut builder).await;
+```
+
+**Projection pushdown (column pruning):**
+```rust
+use aisle::{Expr, PruneRequest};
+use datafusion_common::ScalarValue;
+use parquet::arrow::ParquetRecordBatchReaderBuilder;
+
+let predicate = Expr::gt("key", ScalarValue::Int32(Some(100)));
+let result = PruneRequest::new(&metadata, &schema)
+    .with_predicate(&predicate)
+    .with_output_projection(["payload_a"]) // requested output columns
+    .prune();
+
+// Apply both metadata pruning and required-column projection.
+let reader = ParquetRecordBatchReaderBuilder::try_new(parquet_bytes)?
+    .with_row_groups(result.row_groups().to_vec())
+    .with_projection(result.required_projection_mask(metadata.file_metadata().schema_descr()))
+    .build()?;
 ```
 
 **Custom bloom provider:**

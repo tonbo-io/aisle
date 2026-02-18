@@ -117,6 +117,7 @@
 //! - **Row-group pruning**: Skip entire row groups using min/max statistics
 //! - **Page-level pruning**: Skip individual pages within row groups
 //! - **Bloom filter support**: Definite absence checks for point queries (`=`, `IN`)
+//! - **Projection metadata**: Derive required columns and build Parquet projection masks
 //! - **DataFusion expressions**: Use familiar `col("x").eq(lit(42))` syntax
 //! - **Conservative evaluation**: Never skips data that might match (safety first)
 //! - **Async-first API**: Optimized for remote storage (S3, GCS, Azure)
@@ -165,6 +166,42 @@
 //! let result = PruneRequest::new(metadata, schema)
 //!     .with_predicate(&ir)
 //!     .prune();
+//! # }
+//! ```
+//!
+//! ## Projection Pushdown (Column Pruning)
+//!
+//! [`PruneRequest`] can carry the requested output columns, and [`PruneResult`]
+//! exposes:
+//! - predicate columns (`predicate_columns`)
+//! - requested output columns (`output_projection`)
+//! - required columns union (`required_columns`)
+//!
+//! This allows readers to apply projection masks together with row-group/page pruning.
+//!
+//! ```rust,no_run
+//! # use aisle::{Expr, PruneRequest};
+//! # use datafusion_common::ScalarValue;
+//! # use parquet::{
+//! #     arrow::arrow_reader::ParquetRecordBatchReaderBuilder, file::metadata::ParquetMetaData,
+//! # };
+//! # use arrow_schema::Schema;
+//! # use bytes::Bytes;
+//! # use std::sync::Arc;
+//! # fn example(metadata: &ParquetMetaData, schema: &Arc<Schema>, parquet_bytes: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+//! let predicate = Expr::gt("key", ScalarValue::Int32(Some(100)));
+//! let result = PruneRequest::new(metadata, schema)
+//!     .with_predicate(&predicate)
+//!     .with_output_projection(["payload_a"])
+//!     .prune();
+//!
+//! let projection = result.required_projection_mask(metadata.file_metadata().schema_descr());
+//! let reader = ParquetRecordBatchReaderBuilder::try_new(parquet_bytes)?
+//!     .with_row_groups(result.row_groups().to_vec())
+//!     .with_projection(projection)
+//!     .build()?;
+//! # let _ = reader;
+//! # Ok(())
 //! # }
 //! ```
 //!
