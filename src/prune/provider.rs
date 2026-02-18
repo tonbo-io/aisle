@@ -1,9 +1,52 @@
-use std::{collections::HashMap, future::Future};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+};
 
+use datafusion_common::ScalarValue;
 use parquet::{
     arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder},
     bloom_filter::Sbbf,
 };
+
+/// Canonical value representation used by dictionary-hint providers.
+///
+/// Only string and binary values are included in this MVP. Unsupported value
+/// types are ignored conservatively by dictionary-hint evaluation.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum DictionaryHintValue {
+    Utf8(String),
+    Binary(Vec<u8>),
+}
+
+impl DictionaryHintValue {
+    /// Convert a [`ScalarValue`] into a dictionary-hint value when supported.
+    pub fn from_scalar(value: &ScalarValue) -> Option<Self> {
+        match value {
+            ScalarValue::Utf8(Some(v))
+            | ScalarValue::LargeUtf8(Some(v))
+            | ScalarValue::Utf8View(Some(v)) => Some(Self::Utf8(v.clone())),
+            ScalarValue::Binary(Some(v))
+            | ScalarValue::LargeBinary(Some(v))
+            | ScalarValue::BinaryView(Some(v))
+            | ScalarValue::FixedSizeBinary(_, Some(v)) => Some(Self::Binary(v.clone())),
+            _ => None,
+        }
+    }
+}
+
+/// Evidence returned by dictionary-hint providers.
+///
+/// Pruning is only allowed for [`DictionaryHintEvidence::Exact`] values.
+/// Any uncertain evidence must be reported as [`DictionaryHintEvidence::Unknown`]
+/// to preserve conservative correctness.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DictionaryHintEvidence {
+    /// Complete and exact dictionary values for a row-group column.
+    Exact(HashSet<DictionaryHintValue>),
+    /// Missing or inexact evidence (must not be used for definitive pruning).
+    Unknown,
+}
 
 /// Async bloom filter provider trait for custom I/O strategies.
 ///
@@ -181,6 +224,42 @@ pub trait AsyncBloomFilterProvider {
                 if let Some(filter) = self.bloom_filter(row_group_idx, column_idx).await {
                     result.insert((row_group_idx, column_idx), filter);
                 }
+            }
+            result
+        }
+    }
+
+    /// Load dictionary hint evidence for a specific column in a row group.
+    ///
+    /// # Correctness Contract
+    ///
+    /// Return [`DictionaryHintEvidence::Exact`] **only** when the returned set is
+    /// complete for that `(row_group_idx, column_idx)` pair.
+    ///
+    /// If values are partial, sampled, stale, or unavailable, return
+    /// [`DictionaryHintEvidence::Unknown`]. This ensures Aisle remains conservative
+    /// and does not prune matching data.
+    fn dictionary_hints(
+        &mut self,
+        _row_group_idx: usize,
+        _column_idx: usize,
+    ) -> impl Future<Output = DictionaryHintEvidence> + '_ {
+        async { DictionaryHintEvidence::Unknown }
+    }
+
+    /// Batch dictionary hint evidence lookup for multiple (row_group, column) pairs.
+    ///
+    /// Default implementation executes requests sequentially by calling
+    /// [`dictionary_hints`](Self::dictionary_hints).
+    fn dictionary_hints_batch<'a>(
+        &'a mut self,
+        requests: &'a [(usize, usize)],
+    ) -> impl Future<Output = HashMap<(usize, usize), DictionaryHintEvidence>> + 'a {
+        async move {
+            let mut result = HashMap::new();
+            for &(row_group_idx, column_idx) in requests {
+                let hints = self.dictionary_hints(row_group_idx, column_idx).await;
+                result.insert((row_group_idx, column_idx), hints);
             }
             result
         }

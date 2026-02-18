@@ -91,6 +91,7 @@ cargo bench --manifest-path benches/df_compare/Cargo.toml --bench compare
 cargo bench --manifest-path benches/df_compare/Cargo.toml --bench metadata_eval
 cargo bench --manifest-path benches/df_compare/Cargo.toml --bench point_query
 cargo bench --manifest-path benches/df_compare/Cargo.toml --bench bloom_filter
+cargo bench --manifest-path benches/df_compare/Cargo.toml --bench dictionary_hints
 cargo bench --manifest-path benches/df_compare/Cargo.toml --bench projection
 
 # View HTML reports
@@ -119,6 +120,12 @@ open benches/df_compare/target/criterion/report/index.html
 - **Purpose:** Demonstrate bloom filter effectiveness
 - **Data:** Alternating EVEN/ODD row groups with wide (but not identical) stats
 - **Key Metric:** Row group elimination rate
+
+### `dictionary_hints.rs` - Dictionary-Hints Candidate
+- **Purpose:** Isolate dictionary-hint opportunity on selective string equality predicates
+- **Data:** Wide row-group stats (`a_anchor`..`z_anchor`) with target value present in a subset of row groups
+- **Mode:** `enable_dictionary_hints(true)` with provider-supplied exact per-row-group hint evidence
+- **Key Metrics:** Latency, row groups/pages kept, rows read as decode proxy
 
 ### `projection.rs` - Wide Schema Projection
 - **Purpose:** Measure projection impact on Aisle read path under wide schemas

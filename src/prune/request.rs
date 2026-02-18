@@ -222,6 +222,18 @@ impl<'a> PruneRequest<'a> {
         self
     }
 
+    /// Enables or disables dictionary hint pruning.
+    ///
+    /// Dictionary hints are conservative definite-absence checks for `=` and `IN`
+    /// predicates. They are opt-in and require an async provider that supplies
+    /// complete per-row-group dictionary evidence.
+    ///
+    /// Defaults to `false`.
+    pub fn enable_dictionary_hints(mut self, enable: bool) -> Self {
+        self.options = self.options.enable_dictionary_hints(enable);
+        self
+    }
+
     /// Enables or disables Roaring bitmap output format.
     ///
     /// When enabled, page selections are emitted as Roaring bitmaps.

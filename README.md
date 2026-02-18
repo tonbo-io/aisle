@@ -9,7 +9,7 @@
 
 Metadata-driven Parquet pruning for Rust: Skip irrelevant data before reading
 
-Aisle evaluates pruning predicates against Parquet metadata (row-group statistics, page indexes, bloom filters) to determine which data to skip, dramatically reducing I/O for selective queries without modifying the upstream `parquet` crate.
+Aisle evaluates pruning predicates against Parquet metadata (row-group statistics, page indexes, bloom filters, and optional dictionary hints) to determine which data to skip, dramatically reducing I/O for selective queries without modifying the upstream `parquet` crate.
 
 📖 [Read the full documentation on docs.rs](https://docs.rs/aisle)
 
@@ -112,6 +112,7 @@ Tips: Combine Aisle with proper Parquet configuration:
 - Row-group pruning: Skip entire row groups using min/max statistics
 - Page-level pruning: Skip individual pages within row groups
 - Bloom filter support: Definite absence checks for point queries (`=`, `IN`)
+- Dictionary hints (opt-in): Definite absence checks for string/binary `=` and `IN`
 - Projection metadata: Expose predicate/output required columns for reader projection masks
 - Aisle expressions: Build metadata-safe predicates with `Expr::...` (optional DataFusion compilation via `with_df_predicate` + `datafusion` feature)
 - Conservative evaluation: Never skips data that might match (safety first)
@@ -227,6 +228,7 @@ Unsupported logical types remain conservative (`Unknown` -> keep data):
 | **Statistics** (min/max) | ✓ Always | ✓ Via page index | Range queries |
 | **Null count** | ✓ Always | ✓ Via page index | IS NULL checks |
 | **Bloom filters** | ✓ Optional | ✗ Not applicable | `=` and `IN` |
+| **Dictionary hints** | ✓ Optional (async provider) | ✗ Not applicable | string/binary `=` and `IN` |
 
 ## Known Limitations
 
@@ -248,6 +250,8 @@ Unsupported logical types remain conservative (`Unknown` -> keep data):
 
 - LIKE support is limited: Only prefix patterns (`'prefix%'`) are pushed down.
 
+- Dictionary hints are provider-driven (MVP): dictionary hints are opt-in (`.enable_dictionary_hints(true)`) and require an async provider implementation that returns **exact** per-row-group dictionary evidence.
+
 ## Usage Examples
 
 **Page-level pruning:**
@@ -267,6 +271,26 @@ let result = PruneRequest::new(&metadata, &schema)
     .enable_bloom_filter(true)
     .prune_async(&mut builder).await;
 ```
+
+**Async with dictionary hints (opt-in):**
+```rust
+use aisle::{
+    AsyncBloomFilterProvider, DictionaryHintEvidence, DictionaryHintValue, PruneRequest,
+};
+
+impl AsyncBloomFilterProvider for MyProvider {
+    async fn dictionary_hints(&mut self, rg: usize, col: usize) -> DictionaryHintEvidence {
+        // Return Exact only when the set is complete for (rg, col).
+        DictionaryHintEvidence::Exact(std::collections::HashSet::from([
+            DictionaryHintValue::Utf8("value".to_string()),
+        ]))
+    }
+}
+
+let result = PruneRequest::new(&metadata, &schema)
+    .with_predicate(&predicate)
+    .enable_dictionary_hints(true)
+    .prune_async(&mut my_provider).await;
 
 **Projection pushdown (column pruning):**
 ```rust

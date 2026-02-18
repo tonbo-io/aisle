@@ -181,6 +181,8 @@ fn collect_columns_from_expr(expr: &Expr, columns: &mut BTreeSet<String>) {
         | Expr::InList { column, .. }
         | Expr::BloomFilterEq { column, .. }
         | Expr::BloomFilterInList { column, .. }
+        | Expr::DictionaryHintEq { column, .. }
+        | Expr::DictionaryHintInList { column, .. }
         | Expr::StartsWith { column, .. }
         | Expr::IsNull { column, .. } => {
             columns.insert(column.clone());

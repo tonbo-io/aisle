@@ -23,6 +23,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ Projection-aware pruning outputs (`with_output_projection`, `required_columns`, projection masks)
 - ✅ `PruneOptions` for configuration
 - ✅ `AsyncBloomFilterProvider` trait for custom bloom filter loading
+- ✅ `DictionaryHintValue` + opt-in dictionary hint hooks on async provider
 - ✅ Internal `concat_selections` for row-group alignment
 - ⏳ Stable serialization format for `PruneResult` (post-v0.2.0, optional)
 
@@ -36,6 +37,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ Row-group pruning with tri-state logic
 - ✅ Page-level pruning with column/offset indexes
 - ✅ Bloom filter integration for `=` and `IN` predicates
+- ✅ Dictionary hint MVP for string/binary `=` and `IN` (opt-in, conservative)
 - ✅ Page-level NOT pushdown (conservative, exact selections only)
 - ✅ Null count handling (row-group and page-level)
 - ✅ IntervalMonthDayNano metadata decoding (Parquet INTERVAL months/days/millis -> MonthDayNano)
@@ -143,7 +145,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 2. **Decimal type support** (Decimal128/Decimal256)
 3. **Benchmarking suite** (measure I/O reduction, overhead)
 4. **Performance profiling** (optimize hot paths)
-5. **Dictionary encoding hints** (optimize string comparisons)
+5. **Dictionary hint enhancements** (automatic extraction + broader type coverage)
 6. **Projection pushdown** (column pruning)
 7. **Broader logical type coverage** (where metadata semantics can remain conservative-safe)
 

@@ -1,72 +1,147 @@
 use super::Expr;
+use datafusion_common::ScalarValue;
 
-// Internal rewrite passes to make expressions bloom-aware.
-///
-/// Bloom filters are only injected in positive (non-negated) polarity.
-pub fn inject_bloom_filters(expr: Expr) -> Expr {
-    inject_bloom_filters_inner(expr, true)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MetadataHintConfig {
+    pub bloom: bool,
+    pub dictionary: bool,
 }
 
-/// Apply bloom injection across a list of predicates.
-pub fn inject_bloom_filters_all(predicates: &[Expr]) -> Vec<Expr> {
+/// Inject metadata hints (bloom and/or dictionary) into a single expression.
+///
+/// Hints are injected only in positive (non-negated) polarity.
+pub fn inject_metadata_hints(expr: Expr, config: MetadataHintConfig) -> Expr {
+    inject_metadata_hints_inner(expr, true, config)
+}
+
+/// Inject metadata hints (bloom and/or dictionary) into multiple predicates.
+pub fn inject_metadata_hints_all(predicates: &[Expr], config: MetadataHintConfig) -> Vec<Expr> {
     predicates
         .iter()
         .cloned()
-        .map(inject_bloom_filters)
+        .map(|expr| inject_metadata_hints(expr, config))
         .collect()
 }
 
-fn inject_bloom_filters_inner(expr: Expr, allow_bloom: bool) -> Expr {
+fn inject_metadata_hints_inner(expr: Expr, allow_hints: bool, config: MetadataHintConfig) -> Expr {
     match expr {
-        Expr::Cmp { .. } | Expr::InList { .. } if allow_bloom => with_bloom_if_applicable(expr),
+        Expr::Cmp { .. } | Expr::InList { .. } if allow_hints => {
+            with_metadata_hints_if_applicable(expr, config)
+        }
         Expr::And(parts) => Expr::And(
             parts
                 .into_iter()
-                .map(|part| inject_bloom_filters_inner(part, allow_bloom))
+                .map(|part| inject_metadata_hints_inner(part, allow_hints, config))
                 .collect(),
         ),
         Expr::Or(parts) => Expr::Or(
             parts
                 .into_iter()
-                .map(|part| inject_bloom_filters_inner(part, allow_bloom))
+                .map(|part| inject_metadata_hints_inner(part, allow_hints, config))
                 .collect(),
         ),
-        Expr::Not(inner) => Expr::Not(Box::new(inject_bloom_filters_inner(*inner, !allow_bloom))),
+        Expr::Not(inner) => Expr::Not(Box::new(inject_metadata_hints_inner(
+            *inner,
+            !allow_hints,
+            config,
+        ))),
         other => other,
     }
 }
 
-fn with_bloom_if_applicable(rule: Expr) -> Expr {
+fn with_metadata_hints_if_applicable(rule: Expr, config: MetadataHintConfig) -> Expr {
     match rule {
         Expr::Cmp { column, op, value } if matches!(op, super::CmpOp::Eq) => {
-            let bloom = Expr::BloomFilterEq {
+            let mut parts = vec![Expr::Cmp {
                 column: column.clone(),
+                op: super::CmpOp::Eq,
                 value: value.clone(),
-            };
-            Expr::And(vec![
-                Expr::Cmp {
-                    column,
-                    op: super::CmpOp::Eq,
-                    value,
-                },
-                bloom,
-            ])
+            }];
+            if config.bloom {
+                parts.push(Expr::BloomFilterEq {
+                    column: column.clone(),
+                    value: value.clone(),
+                });
+            }
+            if config.dictionary && is_dictionary_supported_scalar(&value) {
+                parts.push(Expr::DictionaryHintEq {
+                    column: column.clone(),
+                    value: value.clone(),
+                });
+            }
+            if parts.len() == 1 {
+                parts.into_iter().next().expect("one part")
+            } else {
+                Expr::And(parts)
+            }
         }
         Expr::InList { column, values } => {
-            let bloom = Expr::BloomFilterInList {
+            let mut parts = vec![Expr::InList {
                 column: column.clone(),
                 values: values.clone(),
-            };
-            Expr::And(vec![Expr::InList { column, values }, bloom])
+            }];
+            if config.bloom {
+                parts.push(Expr::BloomFilterInList {
+                    column: column.clone(),
+                    values: values.clone(),
+                });
+            }
+            if config.dictionary && is_dictionary_supported_in_list(&values) {
+                parts.push(Expr::DictionaryHintInList {
+                    column: column.clone(),
+                    values: values.clone(),
+                });
+            }
+            if parts.len() == 1 {
+                parts.into_iter().next().expect("one part")
+            } else {
+                Expr::And(parts)
+            }
         }
         other => other,
     }
+}
+
+fn is_dictionary_supported_scalar(value: &ScalarValue) -> bool {
+    matches!(
+        value,
+        ScalarValue::Utf8(Some(_))
+            | ScalarValue::LargeUtf8(Some(_))
+            | ScalarValue::Utf8View(Some(_))
+            | ScalarValue::Binary(Some(_))
+            | ScalarValue::LargeBinary(Some(_))
+            | ScalarValue::BinaryView(Some(_))
+            | ScalarValue::FixedSizeBinary(_, Some(_))
+    )
+}
+
+fn is_dictionary_supported_in_list(values: &[ScalarValue]) -> bool {
+    !values.is_empty() && values.iter().all(is_dictionary_supported_scalar)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion_common::ScalarValue;
+
+    fn inject_bloom_filters(expr: Expr) -> Expr {
+        inject_metadata_hints(
+            expr,
+            MetadataHintConfig {
+                bloom: true,
+                dictionary: false,
+            },
+        )
+    }
+
+    fn inject_bloom_filters_all(predicates: &[Expr]) -> Vec<Expr> {
+        inject_metadata_hints_all(
+            predicates,
+            MetadataHintConfig {
+                bloom: true,
+                dictionary: false,
+            },
+        )
+    }
 
     #[test]
     fn bloom_injection_respects_negation_polarity() {
@@ -87,10 +162,7 @@ mod tests {
             _ => panic!("expected Not(Cmp) for negative context"),
         }
 
-        let double_neg = Expr::not(Expr::not(Expr::eq(
-            "id",
-            ScalarValue::Int64(Some(42)),
-        )));
+        let double_neg = Expr::not(Expr::not(Expr::eq("id", ScalarValue::Int64(Some(42)))));
         let double_injected = inject_bloom_filters(double_neg);
         match double_injected {
             Expr::Not(inner) => match inner.as_ref() {
@@ -241,5 +313,96 @@ mod tests {
         assert!(matches!(injected[1], Expr::And(_)));
         // Third (Lt) should not
         assert!(matches!(injected[2], Expr::Cmp { .. }));
+    }
+
+    #[test]
+    fn dictionary_injection_enabled_for_positive_eq() {
+        let expr = Expr::eq("s", ScalarValue::Utf8(Some("foo".to_string())));
+        let injected = inject_metadata_hints(
+            expr,
+            MetadataHintConfig {
+                bloom: false,
+                dictionary: true,
+            },
+        );
+        match injected {
+            Expr::And(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(parts[0], Expr::Cmp { .. }));
+                assert!(matches!(parts[1], Expr::DictionaryHintEq { .. }));
+            }
+            _ => panic!("expected And([Cmp, DictionaryHintEq])"),
+        }
+    }
+
+    #[test]
+    fn dictionary_injection_respects_negation_polarity() {
+        let expr = Expr::not(Expr::eq("s", ScalarValue::Utf8(Some("foo".to_string()))));
+        let injected = inject_metadata_hints(
+            expr,
+            MetadataHintConfig {
+                bloom: false,
+                dictionary: true,
+            },
+        );
+        match injected {
+            Expr::Not(inner) => assert!(matches!(*inner, Expr::Cmp { .. })),
+            _ => panic!("expected Not(Cmp)"),
+        }
+    }
+
+    #[test]
+    fn metadata_injection_no_hints_keeps_expression() {
+        let expr = Expr::eq("id", ScalarValue::Int64(Some(42)));
+        let injected = inject_metadata_hints(
+            expr.clone(),
+            MetadataHintConfig {
+                bloom: false,
+                dictionary: false,
+            },
+        );
+        assert_eq!(format!("{:?}", injected), format!("{:?}", expr));
+    }
+
+    #[test]
+    fn dictionary_not_injected_for_unsupported_cmp_literal() {
+        let expr = Expr::eq("id", ScalarValue::Int64(Some(42)));
+        let injected = inject_metadata_hints(
+            expr,
+            MetadataHintConfig {
+                bloom: false,
+                dictionary: true,
+            },
+        );
+        assert!(matches!(injected, Expr::Cmp { .. }));
+    }
+
+    #[test]
+    fn dictionary_not_injected_for_mixed_or_empty_in_list() {
+        let mixed = Expr::in_list(
+            "s",
+            vec![
+                ScalarValue::Utf8(Some("alpha".to_string())),
+                ScalarValue::Int32(Some(7)),
+            ],
+        );
+        let mixed_injected = inject_metadata_hints(
+            mixed,
+            MetadataHintConfig {
+                bloom: false,
+                dictionary: true,
+            },
+        );
+        assert!(matches!(mixed_injected, Expr::InList { .. }));
+
+        let empty = Expr::in_list("s", vec![]);
+        let empty_injected = inject_metadata_hints(
+            empty,
+            MetadataHintConfig {
+                bloom: false,
+                dictionary: true,
+            },
+        );
+        assert!(matches!(empty_injected, Expr::InList { .. }));
     }
 }
