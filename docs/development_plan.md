@@ -38,6 +38,8 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ Bloom filter integration for `=` and `IN` predicates
 - ✅ Page-level NOT pushdown (conservative, exact selections only)
 - ✅ Null count handling (row-group and page-level)
+- ✅ IntervalMonthDayNano metadata decoding (Parquet INTERVAL months/days/millis -> MonthDayNano)
+- ✅ Interval ordering pruning for exact point stats (`min == max`) across YearMonth/DayTime/MonthDayNano
 
 ### Selection / Bitmap ✅
 - ✅ Handle >u32::MAX row counts (skip RoaringBitmap, use RowSelection)
@@ -93,6 +95,18 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - **Selection alignment**: RowSelection must match included row groups only
 - **Column resolution**: Full path, qualified names, or unique leaf name
 
+## Conservative Policy for Unsupported Logical Types
+
+- Unsupported logical types always evaluate to `Unknown` at metadata time, so data is kept.
+- Explicit unsupported logical types:
+  - List, LargeList, FixedSizeList, ListView, LargeListView
+  - Struct, Map, Union
+  - Dictionary
+  - RunEndEncoded
+  - Extension
+- Interval ordering remains conservative unless stats/page bounds are exact and collapse to one value (`min == max`).
+- Invalid interval metadata encodings (e.g. unexpected byte lengths) are treated conservatively (`Unknown`).
+
 ## Testing Strategy
 
 **Unit Tests** (41 tests):
@@ -130,7 +144,8 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 3. **Benchmarking suite** (measure I/O reduction, overhead)
 4. **Performance profiling** (optimize hot paths)
 5. **Dictionary encoding hints** (optimize string comparisons)
-6. **Broader logical type coverage** (where metadata semantics can remain conservative-safe)
+6. **Projection pushdown** (column pruning)
+7. **Broader logical type coverage** (where metadata semantics can remain conservative-safe)
 
 ## References
 
