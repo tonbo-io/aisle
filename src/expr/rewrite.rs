@@ -1,32 +1,6 @@
 use super::Expr;
 use datafusion_common::ScalarValue;
 
-// Internal rewrite passes to make expressions bloom-aware.
-///
-/// Bloom filters are only injected in positive (non-negated) polarity.
-#[allow(dead_code)]
-pub fn inject_bloom_filters(expr: Expr) -> Expr {
-    inject_metadata_hints(
-        expr,
-        MetadataHintConfig {
-            bloom: true,
-            dictionary: false,
-        },
-    )
-}
-
-/// Apply bloom injection across a list of predicates.
-#[allow(dead_code)]
-pub fn inject_bloom_filters_all(predicates: &[Expr]) -> Vec<Expr> {
-    inject_metadata_hints_all(
-        predicates,
-        MetadataHintConfig {
-            bloom: true,
-            dictionary: false,
-        },
-    )
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MetadataHintConfig {
     pub bloom: bool,
@@ -148,6 +122,26 @@ fn is_dictionary_supported_in_list(values: &[ScalarValue]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn inject_bloom_filters(expr: Expr) -> Expr {
+        inject_metadata_hints(
+            expr,
+            MetadataHintConfig {
+                bloom: true,
+                dictionary: false,
+            },
+        )
+    }
+
+    fn inject_bloom_filters_all(predicates: &[Expr]) -> Vec<Expr> {
+        inject_metadata_hints_all(
+            predicates,
+            MetadataHintConfig {
+                bloom: true,
+                dictionary: false,
+            },
+        )
+    }
 
     #[test]
     fn bloom_injection_respects_negation_polarity() {
