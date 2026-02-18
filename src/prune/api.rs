@@ -27,6 +27,8 @@ pub(crate) fn prune_compiled(
     schema: &Schema,
     compile: AisleResult,
     options: &PruneOptions,
+    output_projection: Option<Vec<String>>,
+    predicate_columns: Option<Vec<String>>,
 ) -> PruneResult {
     let evaluator = PruneEvaluator::new(metadata, schema);
     let hints = MetadataHintConfig {
@@ -104,7 +106,14 @@ pub(crate) fn prune_compiled(
         }
     });
 
-    PruneResult::new(row_groups, row_selection, roaring, compile)
+    PruneResult::new(
+        row_groups,
+        row_selection,
+        roaring,
+        compile,
+        output_projection,
+        predicate_columns,
+    )
 }
 
 pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvider>(
@@ -113,6 +122,8 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
     compile: AisleResult,
     options: &PruneOptions,
     provider: &mut P,
+    output_projection: Option<Vec<String>>,
+    predicate_columns: Option<Vec<String>>,
 ) -> PruneResult {
     let evaluator = PruneEvaluator::new(metadata, schema);
     let hints = MetadataHintConfig {
@@ -224,7 +235,14 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
         }
     });
 
-    PruneResult::new(row_groups, row_selection, roaring, compile)
+    PruneResult::new(
+        row_groups,
+        row_selection,
+        roaring,
+        compile,
+        output_projection,
+        predicate_columns,
+    )
 }
 
 fn concat_selections(selections: &[(usize, Option<RowSelection>)]) -> RowSelection {

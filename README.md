@@ -113,6 +113,7 @@ Tips: Combine Aisle with proper Parquet configuration:
 - Page-level pruning: Skip individual pages within row groups
 - Bloom filter support: Definite absence checks for point queries (`=`, `IN`)
 - Dictionary hints (opt-in): Definite absence checks for string/binary `=` and `IN`
+- Projection metadata: Expose predicate/output required columns for reader projection masks
 - Aisle expressions: Build metadata-safe predicates with `Expr::...` (optional DataFusion compilation via `with_df_predicate` + `datafusion` feature)
 - Conservative evaluation: Never skips data that might match (safety first)
 - Async-first API: Optimized for remote storage (S3, GCS, Azure)
@@ -162,6 +163,7 @@ Tips: Combine Aisle with proper Parquet configuration:
 │              Pruning Result                         │
 │   row_groups: [2, 5, 7]  <- Only these needed!      │
 │   row_selection: Some(...) <- Page-level selection  │
+│   required_columns: ["user_id", "age", "payload"]  │
 │   compile_result: Unsupported predicates logged     │
 └─────────────────────┬───────────────────────────────┘
                       │
@@ -205,11 +207,19 @@ Current supported leaf types for statistics-based pruning:
 - Times: Time32/Time64
 - Durations: Duration
 - Decimals: Decimal32/Decimal64/Decimal128/Decimal256
+- Intervals: Interval(YearMonth, DayTime, MonthDayNano*)
 
-Not yet supported (treated conservatively as "unknown"):
-- Temporal logical types (Interval)
-- Other complex logical types
-- INT96 physical timestamps (deprecated Parquet physical type)
+Notes:
+- INT96 physical timestamps (deprecated) are supported when mapped to Arrow `Timestamp`.
+
+`*` MonthDayNano note: Parquet INTERVAL metadata stores a 12-byte months/days/millis payload. Aisle maps this to Arrow MonthDayNano as `nanoseconds = millis * 1_000_000` (millisecond precision only).
+
+Unsupported logical types remain conservative (`Unknown` -> keep data):
+- List, LargeList, FixedSizeList, ListView, LargeListView
+- Struct, Map, Union
+- Dictionary
+- RunEndEncoded
+- Extension
 
 ### Metadata Sources
 
@@ -222,7 +232,10 @@ Not yet supported (treated conservatively as "unknown"):
 
 ## Known Limitations
 
-- Type coverage is partial: Only the leaf types listed above are supported for stats-based pruning; Interval and INT96 physical timestamps are currently conservative.
+- Type coverage is partial: Unsupported logical types (listed above) are always conservative (`Unknown` -> keep). For Interval columns, pruning is only enabled when statistics are exact and collapse to a single value (`min == max`):
+  - `=` / `!=`: exact point pruning when `min == max`
+  - `<`, `<=`, `>`, `>=`: exact point pruning when `min == max`
+  - Non-point interval ranges (`min != max`) stay conservative for ordering predicates
 
 - Byte array ordering requires column metadata: For ordering predicates (`<`, `>`, `<=`, `>=`) on Binary/Utf8 columns:
   - Default (conservative): Requires `TYPE_DEFINED_ORDER(UNSIGNED)` column order AND exact (non-truncated) min/max statistics
@@ -278,6 +291,24 @@ let result = PruneRequest::new(&metadata, &schema)
     .with_predicate(&predicate)
     .enable_dictionary_hints(true)
     .prune_async(&mut my_provider).await;
+
+**Projection pushdown (column pruning):**
+```rust
+use aisle::{Expr, PruneRequest};
+use datafusion_common::ScalarValue;
+use parquet::arrow::ParquetRecordBatchReaderBuilder;
+
+let predicate = Expr::gt("key", ScalarValue::Int32(Some(100)));
+let result = PruneRequest::new(&metadata, &schema)
+    .with_predicate(&predicate)
+    .with_output_projection(["payload_a"]) // requested output columns
+    .prune();
+
+// Apply both metadata pruning and required-column projection.
+let reader = ParquetRecordBatchReaderBuilder::try_new(parquet_bytes)?
+    .with_row_groups(result.row_groups().to_vec())
+    .with_projection(result.required_projection_mask(metadata.file_metadata().schema_descr()))
+    .build()?;
 ```
 
 **Custom bloom provider:**

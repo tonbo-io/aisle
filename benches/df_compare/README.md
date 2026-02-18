@@ -92,6 +92,7 @@ cargo bench --manifest-path benches/df_compare/Cargo.toml --bench metadata_eval
 cargo bench --manifest-path benches/df_compare/Cargo.toml --bench point_query
 cargo bench --manifest-path benches/df_compare/Cargo.toml --bench bloom_filter
 cargo bench --manifest-path benches/df_compare/Cargo.toml --bench dictionary_hints
+cargo bench --manifest-path benches/df_compare/Cargo.toml --bench projection
 
 # View HTML reports
 open benches/df_compare/target/criterion/report/index.html
@@ -125,6 +126,12 @@ open benches/df_compare/target/criterion/report/index.html
 - **Data:** Wide row-group stats (`a_anchor`..`z_anchor`) with target value present in a subset of row groups
 - **Mode:** `enable_dictionary_hints(true)` with provider-supplied exact per-row-group hint evidence
 - **Key Metrics:** Latency, row groups/pages kept, rows read as decode proxy
+
+### `projection.rs` - Wide Schema Projection
+- **Purpose:** Measure projection impact on Aisle read path under wide schemas
+- **Data:** 40 row groups × 4,096 rows with 50 columns (`group_mod` filter + 48 payload cols)
+- **Key Metrics:** Wall-clock latency, rows read, decoded/output payload proxy
+- **Latest results:** `benches/df_compare/results/projection_pushdown.md`
 
 ## References
 

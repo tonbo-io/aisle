@@ -42,3 +42,7 @@ harness = false
 [[bench]]
 name = "dictionary_hints"
 harness = false
+
+[[bench]]
+name = "projection"
+harness = false

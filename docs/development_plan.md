@@ -20,6 +20,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ `PruneRequest` builder API for one-shot operations
 - ✅ `Pruner` for stateful reuse across predicates
 - ✅ `PruneResult` with row_groups, row_selection, roaring_bitmap, compile_result
+- ✅ Projection-aware pruning outputs (`with_output_projection`, `required_columns`, projection masks)
 - ✅ `PruneOptions` for configuration
 - ✅ `AsyncBloomFilterProvider` trait for custom bloom filter loading
 - ✅ `DictionaryHintValue` + opt-in dictionary hint hooks on async provider
@@ -39,6 +40,8 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ Dictionary hint MVP for string/binary `=` and `IN` (opt-in, conservative)
 - ✅ Page-level NOT pushdown (conservative, exact selections only)
 - ✅ Null count handling (row-group and page-level)
+- ✅ IntervalMonthDayNano metadata decoding (Parquet INTERVAL months/days/millis -> MonthDayNano)
+- ✅ Interval ordering pruning for exact point stats (`min == max`) across YearMonth/DayTime/MonthDayNano
 
 ### Selection / Bitmap ✅
 - ✅ Handle >u32::MAX row counts (skip RoaringBitmap, use RowSelection)
@@ -57,6 +60,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - ✅ 117 tests passing across all suites
 - ✅ Unit tests for all modules
 - ✅ Integration tests for row-group and page-level pruning
+- ✅ Projection pushdown integration tests (required columns + reader projection masks)
 - ✅ Async bloom filter tests
 - ✅ Cast support tests
 - ✅ Null count edge case tests
@@ -92,6 +96,18 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 - **Page-level pruning requires indexes**: Missing indexes -> fall back to row-group only
 - **Selection alignment**: RowSelection must match included row groups only
 - **Column resolution**: Full path, qualified names, or unique leaf name
+
+## Conservative Policy for Unsupported Logical Types
+
+- Unsupported logical types always evaluate to `Unknown` at metadata time, so data is kept.
+- Explicit unsupported logical types:
+  - List, LargeList, FixedSizeList, ListView, LargeListView
+  - Struct, Map, Union
+  - Dictionary
+  - RunEndEncoded
+  - Extension
+- Interval ordering remains conservative unless stats/page bounds are exact and collapse to one value (`min == max`).
+- Invalid interval metadata encodings (e.g. unexpected byte lengths) are treated conservatively (`Unknown`).
 
 ## Testing Strategy
 
@@ -131,6 +147,7 @@ Track implementation status of metadata-based filter pushdown: DataFusion `Expr`
 4. **Performance profiling** (optimize hot paths)
 5. **Dictionary hint enhancements** (automatic extraction + broader type coverage)
 6. **Projection pushdown** (column pruning)
+7. **Broader logical type coverage** (where metadata semantics can remain conservative-safe)
 
 ## References
 
