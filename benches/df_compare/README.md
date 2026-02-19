@@ -125,7 +125,24 @@ open benches/df_compare/target/criterion/report/index.html
 - **Purpose:** Isolate dictionary-hint opportunity on selective string equality predicates
 - **Data:** Wide row-group stats (`a_anchor`..`z_anchor`) with target value present in a subset of row groups
 - **Mode:** `enable_dictionary_hints(true)` with provider-supplied exact per-row-group hint evidence
-- **Key Metrics:** Latency, row groups/pages kept, rows read as decode proxy
+- **Provider strategy variants:** `no cache`, `batch only`, `batch + cache`
+- **Benchmark IDs:**
+  - `aisle_metadata_only_candidate` / `aisle_prune_plus_scan_candidate` (`no cache`, legacy-stable IDs)
+  - `aisle_metadata_only_batch_only` / `aisle_prune_plus_scan_batch_only`
+  - `aisle_metadata_only_batch_plus_cache` / `aisle_prune_plus_scan_batch_plus_cache`
+- **Key Metrics:** metadata-only latency, prune+scan latency, row groups/pages kept, rows read as decode proxy
+- **Latest provider optimization results:** `benches/df_compare/results/dictionary_hints_provider_optimization.md`
+
+### `dictionary_hints.rs` - Remote Simulation Mode
+- **Purpose:** Expose provider strategy impact under simulated remote store latency
+- **Latency model:** `base_rtt + per_item_cost` via async sleep in provider methods
+- **Data:** 8 dictionary-hinted string columns; predicate is AND equality across all hinted columns
+- **Provider strategy variants:** `no cache`, `batch only`, `batch + cache` (warm cache)
+- **Benchmark IDs:**
+  - `aisle_metadata_only_remote_no_cache` / `aisle_prune_plus_scan_remote_no_cache`
+  - `aisle_metadata_only_remote_batch_only` / `aisle_prune_plus_scan_remote_batch_only`
+  - `aisle_metadata_only_remote_batch_plus_cache` / `aisle_prune_plus_scan_remote_batch_plus_cache`
+  - `aisle_metadata_only_remote_batch_plus_cache_cold` / `aisle_prune_plus_scan_remote_batch_plus_cache_cold`
 
 ### `projection.rs` - Wide Schema Projection
 - **Purpose:** Measure projection impact on Aisle read path under wide schemas

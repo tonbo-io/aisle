@@ -152,28 +152,19 @@ pub(crate) async fn prune_compiled_with_bloom_provider<P: AsyncBloomFilterProvid
     } else {
         HashSet::new()
     };
+    let bloom_column_indices = resolve_column_indices(evaluator.column_lookup(), &bloom_columns);
+    let dictionary_column_indices =
+        resolve_column_indices(evaluator.column_lookup(), &dictionary_columns);
 
     for row_group_idx in 0..metadata.num_row_groups() {
         let row_count = metadata.row_group(row_group_idx).num_rows() as usize;
-        let bloom_filters = if !bloom_columns.is_empty() {
-            load_bloom_filters_async(
-                provider,
-                row_group_idx,
-                evaluator.column_lookup(),
-                &bloom_columns,
-            )
-            .await
+        let bloom_filters = if !bloom_column_indices.is_empty() {
+            load_bloom_filters_async(provider, row_group_idx, &bloom_column_indices).await
         } else {
             None
         };
-        let dictionary_hints = if !dictionary_columns.is_empty() {
-            load_dictionary_hints_async(
-                provider,
-                row_group_idx,
-                evaluator.column_lookup(),
-                &dictionary_columns,
-            )
-            .await
+        let dictionary_hints = if !dictionary_column_indices.is_empty() {
+            load_dictionary_hints_async(provider, row_group_idx, &dictionary_column_indices).await
         } else {
             None
         };
@@ -319,18 +310,30 @@ fn collect_dictionary_columns_for_expr(expr: &Expr, columns: &mut HashSet<String
     }
 }
 
-async fn load_bloom_filters_async<P: AsyncBloomFilterProvider>(
-    provider: &mut P,
-    row_group_idx: usize,
+fn resolve_column_indices(
     column_lookup: &HashMap<String, usize>,
-    bloom_columns: &HashSet<String>,
-) -> Option<HashMap<usize, Sbbf>> {
-    let mut requests = Vec::new();
-    for column in bloom_columns {
+    columns: &HashSet<String>,
+) -> Vec<usize> {
+    let mut indices = Vec::with_capacity(columns.len());
+    for column in columns {
         let Some(col_idx) = column_lookup.get(column) else {
             continue;
         };
-        requests.push((row_group_idx, *col_idx));
+        indices.push(*col_idx);
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+async fn load_bloom_filters_async<P: AsyncBloomFilterProvider>(
+    provider: &mut P,
+    row_group_idx: usize,
+    bloom_column_indices: &[usize],
+) -> Option<HashMap<usize, Sbbf>> {
+    let mut requests = Vec::with_capacity(bloom_column_indices.len());
+    for &column_idx in bloom_column_indices {
+        requests.push((row_group_idx, column_idx));
     }
     if requests.is_empty() {
         return None;
@@ -354,15 +357,11 @@ async fn load_bloom_filters_async<P: AsyncBloomFilterProvider>(
 async fn load_dictionary_hints_async<P: AsyncBloomFilterProvider>(
     provider: &mut P,
     row_group_idx: usize,
-    column_lookup: &HashMap<String, usize>,
-    dictionary_columns: &HashSet<String>,
+    dictionary_column_indices: &[usize],
 ) -> Option<HashMap<usize, HashSet<DictionaryHintValue>>> {
-    let mut requests = Vec::new();
-    for column in dictionary_columns {
-        let Some(col_idx) = column_lookup.get(column) else {
-            continue;
-        };
-        requests.push((row_group_idx, *col_idx));
+    let mut requests = Vec::with_capacity(dictionary_column_indices.len());
+    for &column_idx in dictionary_column_indices {
+        requests.push((row_group_idx, column_idx));
     }
     if requests.is_empty() {
         return None;
