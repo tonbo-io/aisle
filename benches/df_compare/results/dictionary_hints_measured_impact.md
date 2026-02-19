@@ -1,5 +1,8 @@
 # Dictionary Hints MVP - Measured Impact
 
+> Provider strategy follow-up (`no cache` / `batch only` / `batch + cache`) is tracked in
+> `benches/df_compare/results/dictionary_hints_provider_optimization.md`.
+
 ## Run Context
 
 - Date (UTC): 2026-02-17

@@ -406,8 +406,8 @@ pub use compile::{CompilePruningIr, compile_pruning_ir};
 pub use error::AisleError;
 pub use expr::{CmpOp, Expr};
 pub use prune::{
-    AsyncBloomFilterProvider, DictionaryHintEvidence, DictionaryHintValue, PruneOptions,
-    PruneOptionsBuilder, PruneRequest, PruneResult,
+    AsyncBloomFilterProvider, CachedDictionaryHintProvider, DictionaryHintEvidence,
+    DictionaryHintValue, PruneOptions, PruneOptionsBuilder, PruneRequest, PruneResult,
 };
 pub use pruner::{CompiledPruner, Pruner};
 pub use result::AisleResult;

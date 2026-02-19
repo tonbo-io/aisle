@@ -4,7 +4,8 @@ use std::{
 };
 
 use aisle::{
-    AsyncBloomFilterProvider, DictionaryHintEvidence, DictionaryHintValue, Expr, PruneRequest,
+    AsyncBloomFilterProvider, CachedDictionaryHintProvider, DictionaryHintEvidence,
+    DictionaryHintValue, Expr, PruneRequest,
 };
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -43,6 +44,21 @@ fn load_metadata(bytes: &[u8]) -> ParquetMetaData {
         .unwrap()
 }
 
+fn make_two_group_string_metadata() -> (Schema, ParquetMetaData) {
+    let schema = Schema::new(vec![Field::new("s", DataType::Utf8, false)]);
+    let batch1 = make_string_batch(&schema, &["alpha", "beta"]);
+    let batch2 = make_string_batch(&schema, &["target", "omega"]);
+
+    let props = WriterProperties::builder()
+        .set_statistics_enabled(EnabledStatistics::None)
+        .set_dictionary_enabled(true)
+        .set_max_row_group_size(2)
+        .build();
+
+    let bytes = write_parquet_bytes(&[batch1, batch2], props);
+    (schema, load_metadata(&bytes))
+}
+
 #[derive(Default)]
 struct MockDictionaryProvider {
     dictionary_calls: Vec<(usize, usize)>,
@@ -67,25 +83,55 @@ impl AsyncBloomFilterProvider for MockDictionaryProvider {
     }
 }
 
+#[derive(Default)]
+struct BatchedDictionaryProvider {
+    dictionary_calls: usize,
+    batch_calls: usize,
+    hints: HashMap<(usize, usize), HashSet<DictionaryHintValue>>,
+}
+
+impl AsyncBloomFilterProvider for BatchedDictionaryProvider {
+    async fn bloom_filter(&mut self, _row_group_idx: usize, _column_idx: usize) -> Option<Sbbf> {
+        None
+    }
+
+    async fn dictionary_hints(
+        &mut self,
+        row_group_idx: usize,
+        column_idx: usize,
+    ) -> DictionaryHintEvidence {
+        self.dictionary_calls += 1;
+        match self.hints.get(&(row_group_idx, column_idx)) {
+            Some(values) => DictionaryHintEvidence::Exact(values.clone()),
+            None => DictionaryHintEvidence::Unknown,
+        }
+    }
+
+    async fn dictionary_hints_batch<'a>(
+        &'a mut self,
+        requests: &'a [(usize, usize)],
+    ) -> HashMap<(usize, usize), DictionaryHintEvidence> {
+        self.batch_calls += 1;
+        requests
+            .iter()
+            .map(|&(row_group_idx, column_idx)| {
+                let evidence = match self.hints.get(&(row_group_idx, column_idx)) {
+                    Some(values) => DictionaryHintEvidence::Exact(values.clone()),
+                    None => DictionaryHintEvidence::Unknown,
+                };
+                ((row_group_idx, column_idx), evidence)
+            })
+            .collect()
+    }
+}
+
 fn target_expr() -> Expr {
     Expr::eq("s", ScalarValue::Utf8(Some("target".to_string())))
 }
 
 #[tokio::test]
 async fn dictionary_hints_prune_when_enabled() {
-    let schema = Schema::new(vec![Field::new("s", DataType::Utf8, false)]);
-    let batch1 = make_string_batch(&schema, &["alpha", "beta"]);
-    let batch2 = make_string_batch(&schema, &["target", "omega"]);
-
-    // Disable stats so pruning depends on dictionary hints only.
-    let props = WriterProperties::builder()
-        .set_statistics_enabled(EnabledStatistics::None)
-        .set_dictionary_enabled(true)
-        .set_max_row_group_size(2)
-        .build();
-
-    let bytes = write_parquet_bytes(&[batch1, batch2], props);
-    let metadata = load_metadata(&bytes);
+    let (schema, metadata) = make_two_group_string_metadata();
 
     let mut provider = MockDictionaryProvider::default();
     provider.hints.insert(
@@ -119,18 +165,7 @@ async fn dictionary_hints_prune_when_enabled() {
 
 #[tokio::test]
 async fn dictionary_hints_fallback_to_unknown_when_missing() {
-    let schema = Schema::new(vec![Field::new("s", DataType::Utf8, false)]);
-    let batch1 = make_string_batch(&schema, &["alpha", "beta"]);
-    let batch2 = make_string_batch(&schema, &["target", "omega"]);
-
-    let props = WriterProperties::builder()
-        .set_statistics_enabled(EnabledStatistics::None)
-        .set_dictionary_enabled(true)
-        .set_max_row_group_size(2)
-        .build();
-
-    let bytes = write_parquet_bytes(&[batch1, batch2], props);
-    let metadata = load_metadata(&bytes);
+    let (schema, metadata) = make_two_group_string_metadata();
 
     // Missing/ambiguous hints: must be conservative and keep all row groups.
     let mut provider = MockDictionaryProvider::default();
@@ -151,18 +186,7 @@ async fn dictionary_hints_fallback_to_unknown_when_missing() {
 
 #[tokio::test]
 async fn dictionary_hints_disabled_no_regression() {
-    let schema = Schema::new(vec![Field::new("s", DataType::Utf8, false)]);
-    let batch1 = make_string_batch(&schema, &["alpha", "beta"]);
-    let batch2 = make_string_batch(&schema, &["target", "omega"]);
-
-    let props = WriterProperties::builder()
-        .set_statistics_enabled(EnabledStatistics::None)
-        .set_dictionary_enabled(true)
-        .set_max_row_group_size(2)
-        .build();
-
-    let bytes = write_parquet_bytes(&[batch1, batch2], props);
-    let metadata = load_metadata(&bytes);
+    let (schema, metadata) = make_two_group_string_metadata();
 
     let mut provider = MockDictionaryProvider::default();
     provider.hints.insert(
@@ -236,4 +260,86 @@ async fn dictionary_hints_not_called_for_unsupported_literal_types() {
         provider.dictionary_calls.is_empty(),
         "dictionary provider should not be called for unsupported literal types"
     );
+}
+
+#[tokio::test]
+async fn dictionary_hints_batch_provider_called_per_row_group() {
+    let (schema, metadata) = make_two_group_string_metadata();
+
+    let mut provider = BatchedDictionaryProvider::default();
+    provider.hints.insert(
+        (0, 0),
+        HashSet::from([
+            DictionaryHintValue::Utf8("alpha".to_string()),
+            DictionaryHintValue::Utf8("beta".to_string()),
+        ]),
+    );
+    provider.hints.insert(
+        (1, 0),
+        HashSet::from([
+            DictionaryHintValue::Utf8("target".to_string()),
+            DictionaryHintValue::Utf8("omega".to_string()),
+        ]),
+    );
+
+    let expr = target_expr();
+    let result = PruneRequest::new(&metadata, &schema)
+        .with_predicate(&expr)
+        .enable_page_index(false)
+        .enable_bloom_filter(false)
+        .enable_dictionary_hints(true)
+        .emit_roaring(false)
+        .prune_async(&mut provider)
+        .await;
+
+    assert_eq!(result.row_groups(), &[1]);
+    assert_eq!(provider.batch_calls, 2);
+    assert_eq!(provider.dictionary_calls, 0);
+}
+
+#[tokio::test]
+async fn cached_dictionary_provider_reuses_evidence_across_prune_calls() {
+    let (schema, metadata) = make_two_group_string_metadata();
+
+    let mut inner = MockDictionaryProvider::default();
+    inner.hints.insert(
+        (0, 0),
+        HashSet::from([
+            DictionaryHintValue::Utf8("alpha".to_string()),
+            DictionaryHintValue::Utf8("beta".to_string()),
+        ]),
+    );
+    inner.hints.insert(
+        (1, 0),
+        HashSet::from([
+            DictionaryHintValue::Utf8("target".to_string()),
+            DictionaryHintValue::Utf8("omega".to_string()),
+        ]),
+    );
+
+    let mut provider = CachedDictionaryHintProvider::new(inner);
+    let expr = target_expr();
+
+    let first = PruneRequest::new(&metadata, &schema)
+        .with_predicate(&expr)
+        .enable_page_index(false)
+        .enable_bloom_filter(false)
+        .enable_dictionary_hints(true)
+        .emit_roaring(false)
+        .prune_async(&mut provider)
+        .await;
+
+    let second = PruneRequest::new(&metadata, &schema)
+        .with_predicate(&expr)
+        .enable_page_index(false)
+        .enable_bloom_filter(false)
+        .enable_dictionary_hints(true)
+        .emit_roaring(false)
+        .prune_async(&mut provider)
+        .await;
+
+    assert_eq!(first.row_groups(), &[1]);
+    assert_eq!(second.row_groups(), &[1]);
+    assert_eq!(provider.inner().dictionary_calls.len(), 2);
+    assert_eq!(provider.cached_entries(), 2);
 }
