@@ -54,9 +54,9 @@ pub enum DictionaryHintEvidence {
 /// `(row_group_idx, column_idx)` pairs, for example in metadata-only loops
 /// over the same file.
 ///
-/// Cache entries store both `Exact` and `Unknown` evidence. Caching `Unknown`
-/// is conservative and correctness-safe: it may reduce pruning opportunities
-/// if upstream evidence changes, but it cannot introduce false pruning.
+/// Cache entries store only [`DictionaryHintEvidence::Exact`] evidence.
+/// [`DictionaryHintEvidence::Unknown`] is never cached so transient unknowns
+/// can recover on later calls.
 #[derive(Debug, Clone)]
 pub struct CachedDictionaryHintProvider<P> {
     inner: P,
@@ -85,9 +85,13 @@ impl<P> CachedDictionaryHintProvider<P> {
         &self.inner
     }
 
-    /// Access the wrapped provider by mutable reference.
-    pub fn inner_mut(&mut self) -> &mut P {
-        &mut self.inner
+    /// Replace the wrapped provider and invalidate cached dictionary evidence.
+    ///
+    /// Use this when changing source file/metadata or otherwise retargeting the
+    /// provider. Returns the previously wrapped provider.
+    pub fn retarget_inner(&mut self, inner: P) -> P {
+        self.cache.clear();
+        std::mem::replace(&mut self.inner, inner)
     }
 
     /// Consume this wrapper and return the wrapped provider.
@@ -134,7 +138,9 @@ impl<P: AsyncBloomFilterProvider> AsyncBloomFilterProvider for CachedDictionaryH
             }
 
             let evidence = self.inner.dictionary_hints(row_group_idx, column_idx).await;
-            self.cache.insert(key, evidence.clone());
+            if let DictionaryHintEvidence::Exact(_) = &evidence {
+                self.cache.insert(key, evidence.clone());
+            }
             evidence
         }
     }
@@ -162,7 +168,9 @@ impl<P: AsyncBloomFilterProvider> AsyncBloomFilterProvider for CachedDictionaryH
                         .get(&request)
                         .cloned()
                         .unwrap_or(DictionaryHintEvidence::Unknown);
-                    self.cache.insert(request, evidence.clone());
+                    if let DictionaryHintEvidence::Exact(_) = &evidence {
+                        self.cache.insert(request, evidence.clone());
+                    }
                     result.insert(request, evidence);
                 }
             }

@@ -45,9 +45,16 @@ fn load_metadata(bytes: &[u8]) -> ParquetMetaData {
 }
 
 fn make_two_group_string_metadata() -> (Schema, ParquetMetaData) {
+    make_two_group_string_metadata_with_values(&["alpha", "beta"], &["target", "omega"])
+}
+
+fn make_two_group_string_metadata_with_values(
+    group0_values: &[&str],
+    group1_values: &[&str],
+) -> (Schema, ParquetMetaData) {
     let schema = Schema::new(vec![Field::new("s", DataType::Utf8, false)]);
-    let batch1 = make_string_batch(&schema, &["alpha", "beta"]);
-    let batch2 = make_string_batch(&schema, &["target", "omega"]);
+    let batch1 = make_string_batch(&schema, group0_values);
+    let batch2 = make_string_batch(&schema, group1_values);
 
     let props = WriterProperties::builder()
         .set_statistics_enabled(EnabledStatistics::None)
@@ -122,6 +129,37 @@ impl AsyncBloomFilterProvider for BatchedDictionaryProvider {
                 ((row_group_idx, column_idx), evidence)
             })
             .collect()
+    }
+}
+
+#[derive(Default)]
+struct TransientUnknownProvider {
+    dictionary_calls_per_key: HashMap<(usize, usize), usize>,
+    hints: HashMap<(usize, usize), HashSet<DictionaryHintValue>>,
+}
+
+impl AsyncBloomFilterProvider for TransientUnknownProvider {
+    async fn bloom_filter(&mut self, _row_group_idx: usize, _column_idx: usize) -> Option<Sbbf> {
+        None
+    }
+
+    async fn dictionary_hints(
+        &mut self,
+        row_group_idx: usize,
+        column_idx: usize,
+    ) -> DictionaryHintEvidence {
+        let call_count = self
+            .dictionary_calls_per_key
+            .entry((row_group_idx, column_idx))
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
+        if *call_count == 1 {
+            return DictionaryHintEvidence::Unknown;
+        }
+        match self.hints.get(&(row_group_idx, column_idx)) {
+            Some(values) => DictionaryHintEvidence::Exact(values.clone()),
+            None => DictionaryHintEvidence::Unknown,
+        }
     }
 }
 
@@ -341,5 +379,120 @@ async fn cached_dictionary_provider_reuses_evidence_across_prune_calls() {
     assert_eq!(first.row_groups(), &[1]);
     assert_eq!(second.row_groups(), &[1]);
     assert_eq!(provider.inner().dictionary_calls.len(), 2);
+    assert_eq!(provider.cached_entries(), 2);
+}
+
+#[tokio::test]
+async fn cached_dictionary_provider_retarget_without_clear_should_not_false_prune() {
+    let (schema_a, metadata_a) =
+        make_two_group_string_metadata_with_values(&["alpha", "beta"], &["target", "omega"]);
+    let (schema_b, metadata_b) =
+        make_two_group_string_metadata_with_values(&["target", "beta"], &["alpha", "omega"]);
+
+    let mut inner = MockDictionaryProvider::default();
+    inner.hints.insert(
+        (0, 0),
+        HashSet::from([
+            DictionaryHintValue::Utf8("alpha".to_string()),
+            DictionaryHintValue::Utf8("beta".to_string()),
+        ]),
+    );
+    inner.hints.insert(
+        (1, 0),
+        HashSet::from([
+            DictionaryHintValue::Utf8("target".to_string()),
+            DictionaryHintValue::Utf8("omega".to_string()),
+        ]),
+    );
+    let mut provider = CachedDictionaryHintProvider::new(inner);
+
+    let expr = target_expr();
+
+    let first = PruneRequest::new(&metadata_a, &schema_a)
+        .with_predicate(&expr)
+        .enable_page_index(false)
+        .enable_bloom_filter(false)
+        .enable_dictionary_hints(true)
+        .emit_roaring(false)
+        .prune_async(&mut provider)
+        .await;
+    assert_eq!(first.row_groups(), &[1]);
+
+    let mut inner_b = MockDictionaryProvider::default();
+    inner_b.hints.insert(
+        (0, 0),
+        HashSet::from([
+            DictionaryHintValue::Utf8("target".to_string()),
+            DictionaryHintValue::Utf8("beta".to_string()),
+        ]),
+    );
+    inner_b.hints.insert(
+        (1, 0),
+        HashSet::from([
+            DictionaryHintValue::Utf8("alpha".to_string()),
+            DictionaryHintValue::Utf8("omega".to_string()),
+        ]),
+    );
+    let _old = provider.retarget_inner(inner_b);
+    assert_eq!(provider.cached_entries(), 0);
+
+    let second = PruneRequest::new(&metadata_b, &schema_b)
+        .with_predicate(&expr)
+        .enable_page_index(false)
+        .enable_bloom_filter(false)
+        .enable_dictionary_hints(true)
+        .emit_roaring(false)
+        .prune_async(&mut provider)
+        .await;
+
+    // Safety contract: retargeting provider state should not reuse stale evidence.
+    assert_eq!(second.row_groups(), &[0]);
+}
+
+#[tokio::test]
+async fn cached_dictionary_provider_does_not_pin_transient_unknowns() {
+    let (schema, metadata) = make_two_group_string_metadata();
+
+    let mut inner = TransientUnknownProvider::default();
+    inner.hints.insert(
+        (0, 0),
+        HashSet::from([
+            DictionaryHintValue::Utf8("alpha".to_string()),
+            DictionaryHintValue::Utf8("beta".to_string()),
+        ]),
+    );
+    inner.hints.insert(
+        (1, 0),
+        HashSet::from([
+            DictionaryHintValue::Utf8("target".to_string()),
+            DictionaryHintValue::Utf8("omega".to_string()),
+        ]),
+    );
+    let mut provider = CachedDictionaryHintProvider::new(inner);
+
+    let expr = target_expr();
+    let first = PruneRequest::new(&metadata, &schema)
+        .with_predicate(&expr)
+        .enable_page_index(false)
+        .enable_bloom_filter(false)
+        .enable_dictionary_hints(true)
+        .emit_roaring(false)
+        .prune_async(&mut provider)
+        .await;
+    let second = PruneRequest::new(&metadata, &schema)
+        .with_predicate(&expr)
+        .enable_page_index(false)
+        .enable_bloom_filter(false)
+        .enable_dictionary_hints(true)
+        .emit_roaring(false)
+        .prune_async(&mut provider)
+        .await;
+
+    // First pass sees transient unknowns and keeps all row groups.
+    assert_eq!(first.row_groups(), &[0, 1]);
+    // Second pass retries unknowns and recovers exact pruning.
+    assert_eq!(second.row_groups(), &[1]);
+    assert_eq!(provider.inner().dictionary_calls_per_key.get(&(0, 0)), Some(&2));
+    assert_eq!(provider.inner().dictionary_calls_per_key.get(&(1, 0)), Some(&2));
     assert_eq!(provider.cached_entries(), 2);
 }
