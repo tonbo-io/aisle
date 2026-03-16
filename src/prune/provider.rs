@@ -48,6 +48,138 @@ pub enum DictionaryHintEvidence {
     Unknown,
 }
 
+/// Provider adapter that caches dictionary hint evidence across calls.
+///
+/// This wrapper is useful when repeated pruning requests touch the same
+/// `(row_group_idx, column_idx)` pairs, for example in metadata-only loops
+/// over the same file.
+///
+/// Cache entries store only [`DictionaryHintEvidence::Exact`] evidence.
+/// [`DictionaryHintEvidence::Unknown`] is never cached so transient unknowns
+/// can recover on later calls.
+#[derive(Debug, Clone)]
+pub struct CachedDictionaryHintProvider<P> {
+    inner: P,
+    cache: HashMap<(usize, usize), DictionaryHintEvidence>,
+}
+
+impl<P> CachedDictionaryHintProvider<P> {
+    /// Create a new cached provider wrapper.
+    pub fn new(inner: P) -> Self {
+        Self {
+            inner,
+            cache: HashMap::new(),
+        }
+    }
+
+    /// Create a new cached provider wrapper with explicit cache capacity.
+    pub fn with_capacity(inner: P, capacity: usize) -> Self {
+        Self {
+            inner,
+            cache: HashMap::with_capacity(capacity),
+        }
+    }
+
+    /// Access the wrapped provider by reference.
+    pub fn inner(&self) -> &P {
+        &self.inner
+    }
+
+    /// Replace the wrapped provider and invalidate cached dictionary evidence.
+    ///
+    /// Use this when changing source file/metadata or otherwise retargeting the
+    /// provider. Returns the previously wrapped provider.
+    pub fn retarget_inner(&mut self, inner: P) -> P {
+        self.cache.clear();
+        std::mem::replace(&mut self.inner, inner)
+    }
+
+    /// Consume this wrapper and return the wrapped provider.
+    pub fn into_inner(self) -> P {
+        self.inner
+    }
+
+    /// Remove all cached dictionary hint evidence.
+    pub fn clear_dictionary_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    /// Number of cached `(row_group_idx, column_idx)` entries.
+    pub fn cached_entries(&self) -> usize {
+        self.cache.len()
+    }
+}
+
+impl<P: AsyncBloomFilterProvider> AsyncBloomFilterProvider for CachedDictionaryHintProvider<P> {
+    fn bloom_filter(
+        &mut self,
+        row_group_idx: usize,
+        column_idx: usize,
+    ) -> impl Future<Output = Option<Sbbf>> + '_ {
+        self.inner.bloom_filter(row_group_idx, column_idx)
+    }
+
+    fn bloom_filters_batch<'a>(
+        &'a mut self,
+        requests: &'a [(usize, usize)],
+    ) -> impl Future<Output = HashMap<(usize, usize), Sbbf>> + 'a {
+        self.inner.bloom_filters_batch(requests)
+    }
+
+    fn dictionary_hints(
+        &mut self,
+        row_group_idx: usize,
+        column_idx: usize,
+    ) -> impl Future<Output = DictionaryHintEvidence> + '_ {
+        async move {
+            let key = (row_group_idx, column_idx);
+            if let Some(evidence) = self.cache.get(&key) {
+                return evidence.clone();
+            }
+
+            let evidence = self.inner.dictionary_hints(row_group_idx, column_idx).await;
+            if let DictionaryHintEvidence::Exact(_) = &evidence {
+                self.cache.insert(key, evidence.clone());
+            }
+            evidence
+        }
+    }
+
+    fn dictionary_hints_batch<'a>(
+        &'a mut self,
+        requests: &'a [(usize, usize)],
+    ) -> impl Future<Output = HashMap<(usize, usize), DictionaryHintEvidence>> + 'a {
+        async move {
+            let mut result = HashMap::with_capacity(requests.len());
+            let mut missing = Vec::new();
+
+            for &request in requests {
+                if let Some(evidence) = self.cache.get(&request) {
+                    result.insert(request, evidence.clone());
+                } else {
+                    missing.push(request);
+                }
+            }
+
+            if !missing.is_empty() {
+                let loaded = self.inner.dictionary_hints_batch(&missing).await;
+                for request in missing {
+                    let evidence = loaded
+                        .get(&request)
+                        .cloned()
+                        .unwrap_or(DictionaryHintEvidence::Unknown);
+                    if let DictionaryHintEvidence::Exact(_) = &evidence {
+                        self.cache.insert(request, evidence.clone());
+                    }
+                    result.insert(request, evidence);
+                }
+            }
+
+            result
+        }
+    }
+}
+
 /// Async bloom filter provider trait for custom I/O strategies.
 ///
 /// This trait allows users to implement custom bloom filter loading strategies,
